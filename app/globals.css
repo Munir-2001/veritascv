@@ -169,3 +169,190 @@ a:focus {
   outline: none;
   box-shadow: 0 0 0 2px rgba(26, 188, 156, 0.5);
 }
+
+/* Exclusive Early Access Animations */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(26, 188, 156, 0.4),
+                0 0 40px rgba(26, 188, 156, 0.2),
+                0 0 60px rgba(26, 188, 156, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(26, 188, 156, 0.6),
+                0 0 60px rgba(26, 188, 156, 0.4),
+                0 0 90px rgba(26, 188, 156, 0.2);
+  }
+}
+
+@keyframes sparkle {
+  0%, 100% {
+    opacity: 0;
+    transform: scale(0) rotate(0deg);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1) rotate(180deg);
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes borderGlow {
+  0%, 100% {
+    border-color: rgba(26, 188, 156, 0.4);
+    box-shadow: 0 0 20px rgba(26, 188, 156, 0.2);
+  }
+  50% {
+    border-color: rgba(26, 188, 156, 0.8);
+    box-shadow: 0 0 40px rgba(26, 188, 156, 0.5),
+                inset 0 0 20px rgba(26, 188, 156, 0.1);
+  }
+}
+
+@keyframes badgePulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+  }
+  50% {
+    transform: scale(1.05);
+    box-shadow: 0 0 20px rgba(255, 255, 255, 0.6);
+  }
+}
+
+@keyframes cardFloat {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+.exclusive-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.1),
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: shimmer 3s ease-in-out infinite;
+}
+
+.exclusive-pulse {
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+
+.exclusive-badge {
+  animation: badgePulse 2s ease-in-out infinite;
+  position: relative;
+  overflow: hidden;
+}
+
+.exclusive-badge::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.3) 0%,
+    transparent 70%
+  );
+  animation: sparkle 3s ease-in-out infinite;
+}
+
+.exclusive-card {
+  animation: borderGlow 3s ease-in-out infinite, cardFloat 6s ease-in-out infinite;
+  position: relative;
+  backdrop-filter: blur(10px);
+  background: linear-gradient(
+    135deg,
+    rgba(55, 65, 81, 0.98) 0%,
+    rgba(31, 41, 55, 0.98) 50%,
+    rgba(17, 24, 39, 0.98) 100%
+  ) !important;
+  box-shadow: 
+    0 0 0 1px rgba(26, 188, 156, 0.4),
+    0 25px 70px rgba(0, 0, 0, 0.9),
+    0 0 50px rgba(26, 188, 156, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5);
+  transform-style: preserve-3d;
+}
+
+.exclusive-card::before {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  right: -3px;
+  bottom: -3px;
+  background: linear-gradient(
+    45deg,
+    rgba(26, 188, 156, 0.6),
+    rgba(26, 188, 156, 0.3),
+    rgba(26, 188, 156, 0.6),
+    rgba(26, 188, 156, 0.3)
+  );
+  border-radius: inherit;
+  z-index: -1;
+  animation: shimmer 4s linear infinite;
+  opacity: 0.8;
+  filter: blur(8px);
+}
+
+.exclusive-card::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  right: -2px;
+  bottom: -2px;
+  background: linear-gradient(
+    45deg,
+    rgba(26, 188, 156, 0.5),
+    rgba(26, 188, 156, 0.2),
+    rgba(26, 188, 156, 0.5)
+  );
+  border-radius: inherit;
+  z-index: -1;
+  animation: shimmer 4s linear infinite;
+  opacity: 0.6;
+}
+
+.sparkle {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 50%;
+  animation: sparkle 2s ease-in-out infinite;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.8);
+}
+
+.sparkle:nth-child(1) { top: 10%; left: 10%; animation-delay: 0s; }
+.sparkle:nth-child(2) { top: 20%; right: 15%; animation-delay: 0.5s; }
+.sparkle:nth-child(3) { bottom: 15%; left: 20%; animation-delay: 1s; }
+.sparkle:nth-child(4) { bottom: 25%; right: 10%; animation-delay: 1.5s; }
+.sparkle:nth-child(5) { top: 50%; left: 5%; animation-delay: 0.3s; }
+.sparkle:nth-child(6) { top: 60%; right: 5%; animation-delay: 0.8s; }

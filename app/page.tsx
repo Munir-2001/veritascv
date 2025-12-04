@@ -1,6 +1,11 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
 import WaitlistForm from '@/components/WaitlistForm';
+import { supabase } from '@/lib/supabase/client';
+
 const scrollToId = (id: string) => {
   const el = document.getElementById(id);
   if (!el) return;
@@ -8,27 +13,67 @@ const scrollToId = (id: string) => {
 };
 
 export default function Home() {
+  const router = useRouter();
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const checkSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setIsLoggedIn(!!session);
+      setLoading(false);
+    };
+
+    checkSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setIsLoggedIn(!!session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Navigation */}
       <header className="w-full border-b border-steel/20 sticky top-0 bg-background/95 backdrop-blur-md z-50 shadow-sm">
         <nav className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-2">
+          <Link href="/" className="flex items-center gap-2">
             <div className="w-8 h-8 bg-gradient-to-br from-accent to-accent/80 rounded-lg flex items-center justify-center">
               <span className="text-background font-bold text-lg">V</span>
             </div>
             <h1 className="text-2xl font-bold bg-gradient-to-r from-accent to-accent/70 bg-clip-text text-transparent">
               VeritasCV
             </h1>
+          </Link>
+          
+          <div className="flex items-center gap-4">
+            {!loading && (
+              <>
+                {isLoggedIn ? (
+                  <Link
+                    href="/dashboard"
+                    className="px-8 py-4 bg-accent text-background text-lg font-semibold rounded-2xl hover:bg-accent/90 transition-all duration-300 shadow-xl shadow-accent/30 hover:shadow-2xl hover:shadow-accent/40 hover:-translate-y-1 hover:scale-105"
+                  >
+                    Dashboard
+                  </Link>
+                ) : (
+                  <Link
+                    href="/login"
+                    className="px-8 py-4 bg-accent text-background text-lg font-semibold rounded-2xl hover:bg-accent/90 transition-all duration-300 shadow-xl shadow-accent/30 hover:shadow-2xl hover:shadow-accent/40 hover:-translate-y-1 hover:scale-105"
+                  >
+                    Login / Sign Up
+                  </Link>
+                )}
+              </>
+            )}
+            <button
+              onClick={() => scrollToId('waitlist')}
+              className="px-6 py-3 text-steel-light hover:text-accent transition-colors font-medium hidden md:block"
+            >
+              Get Early Access
+            </button>
           </div>
-          {/* Hero CTA */}
-          <button
-            onClick={() => scrollToId('waitlist')}
-            className="px-8 py-4 bg-accent text-background text-lg font-semibold rounded-2xl hover:bg-accent/90 transition-all duration-300 shadow-xl shadow-accent/30 hover:shadow-2xl hover:shadow-accent/40 hover:-translate-y-1 hover:scale-105"
-          >
-            Get Early Access
-          </button>
-
         </nav>
       </header>
 
@@ -205,25 +250,43 @@ export default function Home() {
       </section>
 
       {/* Waitlist CTA */}
-      <section id="waitlist" className="relative bg-gradient-to-r from-gray-800 via-gray-700 to-green-600 text-background overflow-hidden">
-        <div className="futuristic-grid opacity-20"></div>
+      <section id="waitlist" className="relative bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 text-background overflow-hidden">
+        <div className="futuristic-grid opacity-10"></div>
+        <div className="exclusive-shimmer absolute inset-0"></div>
         <div className="animated-line top-1/4 left-0 w-full" style={{ animationDelay: '0s' }}></div>
         <div className="animated-line top-3/4 left-0 w-full" style={{ animationDelay: '2s' }}></div>
+        <div className="scan-line"></div>
         <div className="max-w-4xl mx-auto px-6 py-24 flex justify-center items-center relative z-10">
-          <div className="w-full max-w-xl bg-accent rounded-2xl shadow-2xl p-10 text-center border border-accent/40">
-            <div className="inline-block mb-4 px-4 py-2 bg-white text-black rounded-full text-sm font-medium border border-accent/30">
-              🎯 Limited Early Access
+          <div className="w-full max-w-xl rounded-3xl shadow-2xl p-10 text-center border-2 border-accent/50 exclusive-card exclusive-pulse relative overflow-hidden">
+            {/* Inner glow effect */}
+            <div className="absolute inset-0 bg-gradient-to-br from-accent/5 via-transparent to-accent/10 pointer-events-none"></div>
+            
+            {/* Sparkle effects */}
+            <div className="sparkle"></div>
+            <div className="sparkle"></div>
+            <div className="sparkle"></div>
+            <div className="sparkle"></div>
+            <div className="sparkle"></div>
+            <div className="sparkle"></div>
+            
+            {/* Content wrapper with relative positioning */}
+            <div className="relative z-10">
+              <div className="exclusive-badge inline-block mb-4 px-4 py-2 bg-gradient-to-r from-accent via-accent/90 to-accent text-background rounded-full text-sm font-bold border-2 border-accent/60 shadow-lg">
+                ✨ Limited Early Access
+              </div>
+              <h3 className="text-4xl md:text-5xl font-bold mb-6 tracking-tight text-background animate-pulse" style={{ animationDuration: '3s' }}>
+                Sign up to avail free access
+              </h3>
+              <p className="text-xl text-background/90 mb-10 max-w-2xl mx-auto leading-relaxed">
+                Join the waitlist and get <span className="font-bold text-accent">free access</span> before the public launch. Plus, get <span className="font-bold text-accent">exclusive</span> <span className="font-bold text-accent">free CV generations</span>.
+              </p>
+
+              <WaitlistForm />
+
+              <p className="mt-6 text-background/80 text-sm">
+                🔒 We respect your privacy. No spam, unsubscribe anytime.
+              </p>
             </div>
-            <h3 className="text-4xl md:text-5xl font-bold mb-6 tracking-tight text-background">Sign up to avail free access</h3>
-            <p className="text-xl text-background/90 mb-10 max-w-2xl mx-auto leading-relaxed">
-              Join the waitlist and get <span className="font-bold text-background">free access</span> before the public launch. Plus, get <span className="font-bold text-background">exclusive</span> <span className="font-bold">free CV generations</span>.
-            </p>
-
-            <WaitlistForm />
-
-            <p className="mt-6 text-background/80 text-sm">
-              🔒 We respect your privacy. No spam, unsubscribe anytime.
-            </p>
           </div>
         </div>
       </section>
