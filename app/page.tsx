@@ -205,24 +205,26 @@ export default function Home() {
       </section>
 
       {/* Waitlist CTA */}
-      <section id="waitlist" className="relative bg-gradient-to-br from-accent via-accent/90 to-accent/80 text-background overflow-hidden">
+      <section id="waitlist" className="relative bg-gradient-to-r from-gray-800 via-gray-700 to-green-600 text-background overflow-hidden">
         <div className="futuristic-grid opacity-20"></div>
         <div className="animated-line top-1/4 left-0 w-full" style={{ animationDelay: '0s' }}></div>
         <div className="animated-line top-3/4 left-0 w-full" style={{ animationDelay: '2s' }}></div>
-        <div className="max-w-4xl mx-auto px-6 py-24 text-center relative z-10">
-          <div className="inline-block mb-4 px-4 py-2 bg-background/20 backdrop-blur-sm text-background rounded-full text-sm font-medium border border-background/30">
-            🎯 Limited Early Access
+        <div className="max-w-4xl mx-auto px-6 py-24 flex justify-center items-center relative z-10">
+          <div className="w-full max-w-xl bg-accent rounded-2xl shadow-2xl p-10 text-center border border-accent/40">
+            <div className="inline-block mb-4 px-4 py-2 bg-white text-black rounded-full text-sm font-medium border border-accent/30">
+              🎯 Limited Early Access
+            </div>
+            <h3 className="text-4xl md:text-5xl font-bold mb-6 tracking-tight text-background">Sign up to avail free access</h3>
+            <p className="text-xl text-background/90 mb-10 max-w-2xl mx-auto leading-relaxed">
+              Join the waitlist and get <span className="font-bold text-background">free access</span> before the public launch. Plus, get <span className="font-bold text-background">exclusive</span> <span className="font-bold">free CV generations</span>.
+            </p>
+
+            <WaitlistForm />
+
+            <p className="mt-6 text-background/80 text-sm">
+              🔒 We respect your privacy. No spam, unsubscribe anytime.
+            </p>
           </div>
-          <h3 className="text-4xl md:text-5xl font-bold mb-6 tracking-tight">Sign up to avail free access</h3>
-          <p className="text-xl text-background/90 mb-10 max-w-2xl mx-auto leading-relaxed">
-            Join the waitlist and get <span className="font-bold">free access</span> before the public launch. Plus, get <span className="font-bold text-background">exclusive</span> <span className="font-bold">free CV generations</span>.
-          </p>
-
-          <WaitlistForm />
-
-          <p className="mt-6 text-background/80 text-sm">
-            🔒 We respect your privacy. No spam, unsubscribe anytime.
-          </p>
         </div>
       </section>
 
