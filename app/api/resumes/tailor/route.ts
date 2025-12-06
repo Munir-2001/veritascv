@@ -1,45 +1,130 @@
 import { NextRequest, NextResponse } from "next/server";
+import { tailorResumeWithFocusedPrompts } from "@/lib/ai/tailor-focused";
+import { detectJobMetadata } from "@/lib/ai/detect-job-metadata";
 
 /**
  * API Route: POST /api/resumes/tailor
  * 
- * Tailors a resume based on a job description.
+ * Tailors a resume based on a job description using AI.
  * 
- * In production, this would use AI (OpenAI, Anthropic) to:
- * 1. Analyze the job description
- * 2. Extract key requirements and keywords
- * 3. Match resume content to job requirements
- * 4. Rewrite/optimize sections
- * 5. Return tailored resume
+ * Supports multiple AI providers:
+ * - OpenAI (GPT-4, GPT-3.5-turbo)
+ * - Anthropic (Claude)
+ * - Local AI (Ollama)
  * 
- * For now, this is a placeholder that returns formatted output.
+ * Configure via environment variables:
+ * - AI_PROVIDER: "openai" | "anthropic" | "local"
+ * - OPENAI_API_KEY or ANTHROPIC_API_KEY
+ * - AI_MODEL: model name (e.g., "gpt-4o-mini", "claude-3-5-sonnet-20241022")
  */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { resume_id, resume_text, structured_data, job_description } = body;
+    const {
+      resume_id,
+      raw_text, // Primary source - complete raw text
+      resume_text, // Fallback if raw_text not provided
+      structured_data,
+      job_description,
+      job_title,
+      job_level,
+      domain,
+      company_name,
+      company_description,
+      additional_context,
+    } = body;
 
-    if (!resume_text || !job_description) {
+    // Use raw_text as primary source (it's complete), fallback to resume_text
+    const primaryText = raw_text || resume_text;
+
+    console.log(`[Tailor API] Request received:`, {
+      raw_text_length: raw_text?.length || 0,
+      resume_text_length: resume_text?.length || 0,
+      using: raw_text ? "raw_text" : "resume_text",
+      job_title,
+      job_level,
+      domain,
+      company_name,
+      has_structured_data: !!structured_data,
+    });
+
+    if (!primaryText || !job_description) {
       return NextResponse.json(
-        { error: "Missing required fields: resume_text and job_description" },
+        { error: "Missing required fields: raw_text (or resume_text) and job_description" },
         { status: 400 }
       );
     }
 
-    // TODO: Integrate with AI service (OpenAI, Anthropic, etc.)
-    // For now, return a placeholder tailored resume
-    
-    // Extract keywords from job description
-    const jobKeywords = extractKeywords(job_description);
-    
-    // Create tailored resume (placeholder - replace with AI)
-    const tailoredResume = createTailoredResume(resume_text, structured_data, job_description, jobKeywords);
+    // Detect job level and domain from job description if not provided
+    let detectedJobLevel = job_level;
+    let detectedDomain = domain;
 
-    return NextResponse.json({
-      tailored_resume: tailoredResume,
-      keywords_matched: jobKeywords.length,
-      resume_id: resume_id,
-    });
+    if (!job_level || !domain) {
+      console.log(`[Tailor API] Detecting job level and domain from job description...`);
+      try {
+        const metadata = await detectJobMetadata(job_description, job_title);
+        detectedJobLevel = job_level || metadata.job_level;
+        detectedDomain = domain || metadata.domain;
+        console.log(`[Tailor API] ✅ Detected: level=${detectedJobLevel}, domain=${detectedDomain}`);
+      } catch (error: any) {
+        console.error(`[Tailor API] Detection failed:`, error);
+        // Use defaults
+        detectedJobLevel = job_level || "mid";
+        detectedDomain = domain || "general";
+      }
+    }
+
+    // Use focused prompts to tailor the resume
+    try {
+      const result = await tailorResumeWithFocusedPrompts({
+        raw_text: primaryText,
+        structured_data: structured_data || {},
+        job_description,
+        job_title,
+        job_level: detectedJobLevel,
+        domain: detectedDomain,
+        company_name,
+        company_description,
+        additional_context,
+        template: body.template || "modern", // Pass template for style
+      });
+
+      // Return structured sections (not just text)
+      return NextResponse.json({
+        tailored_sections: result.sections, // Structured data
+        tailored_resume: JSON.stringify(result.sections, null, 2), // Also as JSON string for compatibility
+        keywords_matched: result.keywords_matched,
+        suggestions: result.suggestions,
+        resume_id: resume_id,
+        detected_job_level: detectedJobLevel, // Return detected values
+        detected_domain: detectedDomain,
+      });
+    } catch (aiError: any) {
+      console.error("AI tailoring error:", aiError);
+      
+      // Fallback to basic tailoring if AI fails
+      console.log("Falling back to basic tailoring...");
+      const jobKeywords = extractKeywords(job_description);
+      const tailoredResume = createTailoredResume(
+        resume_text,
+        structured_data,
+        job_description,
+        jobKeywords
+      );
+
+      return NextResponse.json({
+        tailored_resume: tailoredResume,
+        keywords_matched: jobKeywords.length,
+        suggestions: {
+          keywords: jobKeywords.slice(0, 10),
+          missingSkills: [],
+          formatTips: ["Use action verbs", "Quantify achievements"],
+          tone: "Professional",
+        },
+        resume_id: resume_id,
+        warning: "AI tailoring unavailable, using basic tailoring",
+      });
+    }
   } catch (error: any) {
     console.error("Tailor error:", error);
     return NextResponse.json(

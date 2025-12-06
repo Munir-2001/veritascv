@@ -113,8 +113,34 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Step 3: Extract structured data using AI/pattern matching
-    structuredData = extractStructuredData(rawText);
+    // Step 3: Extract structured data using AI parsing (MUCH better than regex!)
+    console.log(`[Parse] Raw text length: ${rawText.length}`);
+    console.log(`[Parse] First 200 chars:`, rawText.substring(0, 200));
+    
+    // Try AI-powered parsing first
+    try {
+      const { parseResumeWithAI, convertToInternalFormat } = await import("@/lib/ai/resumeParser");
+      const aiParsed = await parseResumeWithAI(rawText);
+      
+      if (aiParsed) {
+        console.log(`[Parse] ✅ AI parsing successful!`);
+        structuredData = convertToInternalFormat(aiParsed);
+      } else {
+        console.log(`[Parse] ⚠️ AI parsing failed, falling back to regex`);
+        structuredData = extractStructuredData(rawText);
+      }
+    } catch (error: any) {
+      console.error(`[Parse] ❌ AI parsing error: ${error.message}, falling back to regex`);
+      structuredData = extractStructuredData(rawText);
+    }
+    
+    console.log(`[Parse] Final extracted data:`, {
+      experience: structuredData.experience?.length || 0,
+      education: structuredData.education?.length || 0,
+      projects: structuredData.projects?.length || 0,
+      skills: structuredData.skills?.length || 0,
+      certifications: structuredData.certifications?.length || 0,
+    });
 
     // Step 4: Get user's profile to ensure it exists
     const { data: profile, error: profileError } = await supabase

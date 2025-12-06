@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 import Link from "next/link";
 import OnboardingModal from "@/components/OnboardingModal";
+import JobApplicationsList from "@/components/JobApplicationsList";
 
 interface User {
   email?: string;
@@ -23,12 +24,25 @@ interface Profile {
   resume_id?: string;
 }
 
+interface DashboardStats {
+  resumesCreated: number;
+  uploadedResumes: number;
+  cvAudits: number;
+  coverLetters: number;
+}
+
 export default function Dashboard() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [stats, setStats] = useState<DashboardStats>({
+    resumesCreated: 0,
+    uploadedResumes: 0,
+    cvAudits: 0,
+    coverLetters: 0,
+  });
 
   useEffect(() => {
     const checkSessionAndProfile = async () => {
@@ -74,6 +88,17 @@ export default function Dashboard() {
             // Fallback to profile from get API
             setProfile(profileResult.profile);
           }
+
+          // Fetch dashboard stats
+          const statsResponse = await fetch(
+            `/api/dashboard/stats?user_id=${session.user.id}`
+          );
+          if (statsResponse.ok) {
+            const statsResult = await statsResponse.json();
+            if (statsResult.stats) {
+              setStats(statsResult.stats);
+            }
+          }
         } catch (error) {
           console.error("Error fetching profile/resumes:", error);
         }
@@ -107,6 +132,20 @@ export default function Dashboard() {
             .catch((error) => {
               console.error("Sync error:", error);
             });
+
+          // Refresh stats
+          if (session.user.id) {
+            fetch(`/api/dashboard/stats?user_id=${session.user.id}`)
+              .then((res) => res.json())
+              .then((result) => {
+                if (result.stats) {
+                  setStats(result.stats);
+                }
+              })
+              .catch((error) => {
+                console.error("Stats fetch error:", error);
+              });
+          }
         }
         setLoading(false);
       }
@@ -139,11 +178,59 @@ export default function Dashboard() {
             setProfile(data.profile);
           }
         }
+
+        // Refresh stats
+        const statsResponse = await fetch(`/api/dashboard/stats?user_id=${user.id}`);
+        if (statsResponse.ok) {
+          const statsResult = await statsResponse.json();
+          if (statsResult.stats) {
+            setStats(statsResult.stats);
+          }
+        }
       } catch (error) {
         console.error("Sync error:", error);
       }
     }
   };
+
+  // Refresh stats when component becomes visible or when user navigates back
+  useEffect(() => {
+    if (!user?.id || loading) return;
+
+    const refreshStats = async () => {
+      try {
+        const statsResponse = await fetch(`/api/dashboard/stats?user_id=${user.id}`);
+        if (statsResponse.ok) {
+          const statsResult = await statsResponse.json();
+          if (statsResult.stats) {
+            setStats(statsResult.stats);
+          }
+        }
+      } catch (error) {
+        console.error("Stats refresh error:", error);
+      }
+    };
+
+    // Refresh stats when page becomes visible (user returns from tailor page)
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        refreshStats();
+      }
+    };
+
+    // Refresh stats on window focus (user switches back to tab)
+    const handleFocus = () => {
+      refreshStats();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleFocus);
+    
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [user?.id, loading]);
 
   if (loading) {
     return (
@@ -310,16 +397,19 @@ export default function Dashboard() {
         {/* Quick Stats */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
           <div className="p-6 bg-steel/10 rounded-3xl border border-steel/20 backdrop-blur-sm hover:border-accent/40 transition-all duration-300 hover:scale-105">
-            <div className="text-3xl font-bold text-accent mb-2">0</div>
+            <div className="text-3xl font-bold text-accent mb-2">{stats.resumesCreated}</div>
             <div className="text-steel-light">Resumes Created</div>
+            <div className="text-xs text-steel-light/70 mt-1">Tailored CVs generated</div>
           </div>
           <div className="p-6 bg-steel/10 rounded-3xl border border-steel/20 backdrop-blur-sm hover:border-accent/40 transition-all duration-300 hover:scale-105">
-            <div className="text-3xl font-bold text-accent mb-2">0</div>
+            <div className="text-3xl font-bold text-accent mb-2">{stats.cvAudits}</div>
             <div className="text-steel-light">CV Audits</div>
+            <div className="text-xs text-steel-light/70 mt-1">Coming soon</div>
           </div>
           <div className="p-6 bg-steel/10 rounded-3xl border border-steel/20 backdrop-blur-sm hover:border-accent/40 transition-all duration-300 hover:scale-105">
-            <div className="text-3xl font-bold text-accent mb-2">0</div>
+            <div className="text-3xl font-bold text-accent mb-2">{stats.coverLetters}</div>
             <div className="text-steel-light">Cover Letters</div>
+            <div className="text-xs text-steel-light/70 mt-1">Coming soon</div>
           </div>
         </div>
 
@@ -425,17 +515,8 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Recent Activity */}
-        <div className="bg-steel/5 rounded-3xl border border-steel/20 p-8 backdrop-blur-sm">
-          <h3 className="text-2xl font-bold mb-6">Recent Activity</h3>
-          <div className="text-center py-12 text-steel-light">
-            <svg className="w-16 h-16 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            <p className="text-lg">No activity yet</p>
-            <p className="text-sm mt-2">Start by creating your first optimized resume!</p>
-          </div>
-        </div>
+        {/* Job Applications History */}
+        {user?.id && <JobApplicationsList userId={user.id} />}
       </main>
     </div>
   );

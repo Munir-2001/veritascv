@@ -6,6 +6,9 @@ import { supabase } from "@/lib/supabase/client";
 import Link from "next/link";
 import OnboardingModal from "@/components/OnboardingModal";
 import ResumePreview from "@/components/ResumePreview";
+import ProgressBar from "@/components/ProgressBar";
+import AISuggestions from "@/components/AISuggestions";
+import RecruiterInfoBanner from "@/components/RecruiterInfoBanner";
 
 interface Resume {
   id: string;
@@ -16,7 +19,33 @@ interface Resume {
   parsed_at: string;
 }
 
-type TailorStep = "select-resume" | "upload-resume" | "job-description" | "tailoring" | "result";
+type TailorStep =
+  | "select-resume"
+  | "cv-name"
+  | "job-description"
+  | "job-title"
+  | "company-details"
+  | "recruiter-details"
+  | "additional-context"
+  | "review"
+  | "generating"
+  | "success";
+
+interface JobApplicationData {
+  cv_name?: string; // Custom name to appear on CV
+  job_title: string;
+  job_description: string;
+  job_level?: string; // Optional - will be detected by AI
+  domain?: string; // Optional - will be detected by AI
+  company_name?: string;
+  company_description?: string;
+  recruiter_name?: string;
+  recruiter_email?: string;
+  additional_notes?: string;
+  template?: string;
+}
+
+const TOTAL_STEPS = 8;
 
 export default function TailorResume() {
   const router = useRouter();
@@ -24,35 +53,48 @@ export default function TailorResume() {
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [selectedResume, setSelectedResume] = useState<Resume | null>(null);
   const [step, setStep] = useState<TailorStep>("select-resume");
-  const [jobDescription, setJobDescription] = useState("");
-  const [tailoredResume, setTailoredResume] = useState<string>("");
   const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [previewResume, setPreviewResume] = useState<Resume | null>(null);
+  const [aiSuggestions, setAiSuggestions] = useState<any>(null);
+  const [tailoredText, setTailoredText] = useState<string>("");
+  const [tailoredSections, setTailoredSections] = useState<any>(null); // Store structured sections for saving
+  const [generatedCvUrl, setGeneratedCvUrl] = useState<{ pdf?: string; docx?: string }>({});
+  const [applicationId, setApplicationId] = useState<string | null>(null);
+
+  // Form data
+  const [formData, setFormData] = useState<JobApplicationData>({
+    cv_name: "", // Will be pre-filled from resume if available
+    job_title: "",
+    job_description: "",
+    company_name: "",
+    company_description: "",
+    recruiter_name: "",
+    recruiter_email: "",
+    additional_notes: "",
+    template: "modern",
+  });
 
   useEffect(() => {
     const checkSession = async () => {
       const { data: { session }, error } = await supabase.auth.getSession();
-      
+
       if (error || !session) {
         router.push("/login");
         return;
       }
 
       setUser(session.user);
-      
-      // Fetch user's resumes using API
+
       if (session.user.id) {
         try {
           const response = await fetch(`/api/resumes/list?user_id=${session.user.id}`);
           if (response.ok) {
             const data = await response.json();
             setResumes(data.resumes || []);
-            // If no resumes, go to upload step
             if (data.resumes.length === 0) {
-              setStep("upload-resume");
+              setStep("select-resume");
             }
           }
         } catch (err) {
@@ -66,70 +108,318 @@ export default function TailorResume() {
     checkSession();
   }, [router]);
 
-  const handleResumeSelect = (resume: Resume) => {
-    setSelectedResume(resume);
-    setStep("job-description");
+  const getCurrentStepNumber = (): number => {
+    const stepMap: Record<TailorStep, number> = {
+      "select-resume": 1,
+      "cv-name": 2,
+      "job-description": 3,
+      "job-title": 4,
+      "company-details": 5,
+      "recruiter-details": 6,
+      "additional-context": 7,
+      "review": 8,
+      "generating": 8,
+      "success": 8,
+    };
+    return stepMap[step] || 1;
   };
 
-  const handleResumeUploadComplete = async (resumeId?: string) => {
-    setShowUploadModal(false);
-    // Refresh resumes list using API
-    if (user?.id) {
-      try {
-        const response = await fetch(`/api/resumes/list?user_id=${user.id}`);
-        if (response.ok) {
-          const data = await response.json();
-          setResumes(data.resumes || []);
-          if (resumeId) {
-            const newResume = data.resumes?.find((r: Resume) => r.id === resumeId);
-            if (newResume) {
-              setSelectedResume(newResume);
-              setStep("job-description");
-            }
-          }
+  const handleNext = () => {
+    setError(null);
+    const stepOrder: TailorStep[] = [
+      "select-resume",
+      "cv-name",
+      "job-description",
+      "job-title",
+      "company-details",
+      "recruiter-details",
+      "additional-context",
+      "review",
+    ];
+    const currentIndex = stepOrder.indexOf(step);
+    if (currentIndex < stepOrder.length - 1) {
+      setStep(stepOrder[currentIndex + 1]);
+    }
+  };
+
+  const handleBack = () => {
+    setError(null);
+    const stepOrder: TailorStep[] = [
+      "select-resume",
+      "cv-name",
+      "job-description",
+      "job-title",
+      "company-details",
+      "recruiter-details",
+      "additional-context",
+      "review",
+    ];
+    const currentIndex = stepOrder.indexOf(step);
+    if (currentIndex > 0) {
+      setStep(stepOrder[currentIndex - 1]);
+    }
+  };
+
+  const handleStepClick = (stepNumber: number) => {
+    const stepOrder: TailorStep[] = [
+      "select-resume",
+      "cv-name",
+      "job-description",
+      "job-title",
+      "company-details",
+      "recruiter-details",
+      "additional-context",
+      "review",
+    ];
+    if (stepNumber >= 1 && stepNumber <= stepOrder.length) {
+      setStep(stepOrder[stepNumber - 1]);
+    }
+  };
+
+  // Extract name from resume (from raw text or structured data)
+  const extractNameFromResume = (resume: Resume): string => {
+    // Try structured data first
+    if (resume.structured?.contact?.name) {
+      return resume.structured.contact.name;
+    }
+    if (resume.structured?.name) {
+      return resume.structured.name;
+    }
+    
+    // Try extracting from raw text (first line usually contains name)
+    if (resume.raw_text) {
+      const lines = resume.raw_text.split("\n").filter(line => line.trim());
+      if (lines.length > 0) {
+        const firstLine = lines[0].trim();
+        // Check if first line looks like a name (2-4 words, no special chars except spaces/hyphens)
+        if (firstLine.match(/^[A-Za-z\s\-]{2,50}$/) && firstLine.split(/\s+/).length <= 4) {
+          return firstLine;
         }
-      } catch (err) {
-        console.error("Failed to refresh resumes:", err);
       }
     }
+    
+    return "";
   };
 
-  const handleTailor = async () => {
-    if (!selectedResume || !jobDescription.trim()) {
-      setError("Please select a resume and enter a job description");
-      return;
-    }
+  const analyzeJobDescription = async (description: string) => {
+    // Simple keyword extraction for AI suggestions
+    const keywords = extractKeywords(description);
+    const suggestions = {
+      keywords: keywords.slice(0, 10),
+      missingSkills: [],
+      formatTips: ["Use action verbs", "Quantify achievements"],
+      tone: "Professional",
+    };
+    setAiSuggestions(suggestions);
+  };
 
-    setStep("tailoring");
+  const extractKeywords = (text: string): string[] => {
+    const commonTech = [
+      "JavaScript",
+      "TypeScript",
+      "Python",
+      "Java",
+      "React",
+      "Node.js",
+      "AWS",
+      "Docker",
+      "Kubernetes",
+      "PostgreSQL",
+      "MongoDB",
+      "SQL",
+      "Machine Learning",
+      "AI",
+      "Agile",
+      "Scrum",
+    ];
+    const textLower = text.toLowerCase();
+    return commonTech.filter((tech) => textLower.includes(tech.toLowerCase()));
+  };
+
+  const handleGenerateCV = async () => {
+    if (!selectedResume) return;
+
+    setStep("generating");
     setError(null);
 
     try {
-      // Call API to tailor resume
-      const response = await fetch("/api/resumes/tailor", {
+      // Step 1: Tailor the resume using focused prompts (uses raw_text as primary source)
+      const tailorResponse = await fetch("/api/resumes/tailor", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           resume_id: selectedResume.id,
-          resume_text: selectedResume.raw_text,
-          structured_data: selectedResume.structured,
-          job_description: jobDescription,
+          raw_text: selectedResume.raw_text, // Primary source - complete raw text
+          structured_data: selectedResume.structured, // Optional fallback
+          job_description: formData.job_description,
+          job_title: formData.job_title,
+          // job_level and domain are optional - will be detected by AI
+          company_name: formData.company_name,
+          company_description: formData.company_description,
+          additional_context: formData.additional_notes,
+          template: formData.template || "modern", // Pass template for style
         }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Failed to tailor resume");
+      if (!tailorResponse.ok) {
+        throw new Error("Failed to tailor resume");
       }
 
-      const data = await response.json();
-      setTailoredResume(data.tailored_resume);
-      setStep("result");
+      const tailorData = await tailorResponse.json();
+      
+      // Store both structured sections and text format
+      setTailoredText(tailorData.tailored_resume);
+      setTailoredSections(tailorData.tailored_sections); // Store structured data for saving
+      
+      // Use detected job level and domain from API (or fallback to defaults)
+      const detectedJobLevel = tailorData.detected_job_level || "mid";
+      const detectedDomain = tailorData.detected_domain || "general";
+      
+      // Update formData with detected values for review page
+      setFormData(prev => ({
+        ...prev,
+        job_level: detectedJobLevel,
+        domain: detectedDomain,
+      }));
+      
+      // Step 2: Generate CV files (PDF and DOCX) using structured sections
+      const cvResponse = await fetch("/api/cv/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resume_id: selectedResume.id,
+          tailored_sections: tailorData.tailored_sections, // NEW: Structured sections from focused prompts
+          tailored_text: tailorData.tailored_resume, // Fallback: JSON string
+          structured_data: tailorData.tailored_sections || selectedResume.structured, // Use tailored sections
+          raw_text: selectedResume.raw_text, // Pass raw text for contact info extraction
+          template: formData.template || "modern",
+          job_title: formData.job_title,
+          job_level: detectedJobLevel, // Use detected value
+          domain: detectedDomain, // Use detected value
+          job_description: formData.job_description, // For keyword extraction
+          cv_name: formData.cv_name, // Custom name for CV
+        }),
+      });
+
+      if (!cvResponse.ok) {
+        throw new Error("Failed to generate CV");
+      }
+
+      const cvData = await cvResponse.json();
+
+      // Store tailored text for saving later
+      setTailoredText(tailorData.tailored_resume);
+
+      setGeneratedCvUrl({
+        pdf: cvData.pdf_url,
+        docx: cvData.docx_url,
+      });
+      
+      // Step 3: Save job application with tailored data
+      try {
+        const appResponse = await fetch("/api/job-applications/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: user.id,
+            resume_id: selectedResume.id,
+            job_title: formData.job_title,
+            job_description: formData.job_description,
+            job_level: detectedJobLevel,
+            domain: detectedDomain,
+            company_name: formData.company_name,
+            company_description: formData.company_description,
+            recruiter_name: formData.recruiter_name,
+            recruiter_email: formData.recruiter_email,
+            additional_notes: formData.additional_notes,
+            tailored_resume_text: tailorData.tailored_resume,
+            tailored_sections: tailorData.tailored_sections || tailoredSections, // Store structured data for regeneration
+            template: formData.template || "modern",
+            cv_name: formData.cv_name,
+          }),
+        });
+
+        if (appResponse.ok) {
+          const appData = await appResponse.json();
+          setApplicationId(appData.application_id);
+          console.log(`[CV Generation] Job application saved: ${appData.application_id}`);
+        }
+      } catch (err: any) {
+        console.error("Failed to save job application:", err);
+        // Don't fail the whole flow if saving fails
+      }
+      
+      setStep("success");
     } catch (err: any) {
-      console.error("Tailor error:", err);
-      setError(err.message || "Failed to tailor resume");
-      setStep("job-description");
+      console.error("Generate CV error:", err);
+      setError(err.message || "Failed to generate CV");
+      setStep("review");
+    }
+  };
+
+  const handleDownload = async (format: "pdf" | "docx") => {
+    const url = format === "pdf" ? generatedCvUrl.pdf : generatedCvUrl.docx;
+    if (!url) return;
+
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = `${formData.job_title || "resume"}-${Date.now()}.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(downloadUrl);
+      document.body.removeChild(a);
+    } catch (err) {
+      console.error("Download error:", err);
+      setError("Failed to download file");
+    }
+  };
+
+  const handleSaveApplication = async () => {
+    if (!selectedResume || !tailoredText) {
+      setError("Missing resume or tailored text");
+      return;
+    }
+
+    try {
+      const appResponse = await fetch("/api/job-applications/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: user.id,
+          resume_id: selectedResume.id,
+          job_title: formData.job_title,
+          job_description: formData.job_description,
+          job_level: formData.job_level || "mid", // Use detected value if available
+          domain: formData.domain || "general", // Use detected value if available
+          company_name: formData.company_name,
+          company_description: formData.company_description,
+          recruiter_name: formData.recruiter_name,
+          recruiter_email: formData.recruiter_email,
+          additional_notes: formData.additional_notes,
+          tailored_resume_text: tailoredText,
+          tailored_sections: tailoredSections, // Store structured data for regeneration
+          template: formData.template || "modern",
+          cv_name: formData.cv_name,
+        }),
+      });
+
+      if (!appResponse.ok) {
+        const errorData = await appResponse.json();
+        throw new Error(errorData.error || "Failed to save application");
+      }
+
+      const appData = await appResponse.json();
+      setApplicationId(appData.application_id);
+      
+      // Show success message
+      alert("Application saved successfully! You can track it in your applications.");
+    } catch (err: any) {
+      console.error("Save application error:", err);
+      setError(err.message || "Failed to save application");
     }
   };
 
@@ -154,7 +444,7 @@ export default function TailorResume() {
               VeritasCV
             </h1>
           </Link>
-          
+
           <Link
             href="/dashboard"
             className="px-4 py-2 text-steel-light hover:text-accent transition-colors text-sm font-medium"
@@ -167,39 +457,17 @@ export default function TailorResume() {
       <main className="max-w-4xl mx-auto px-6 py-12">
         <div className="mb-8">
           <h2 className="text-4xl font-bold mb-2">AI Resume Tailoring</h2>
-          <p className="text-steel-light">
-            Tailor your resume to match any job description in seconds
-          </p>
+          <p className="text-steel-light">Tailor your resume to match any job description</p>
         </div>
 
-        {/* Progress Steps */}
-        <div className="mb-8 flex items-center gap-4">
-          {["Select Resume", "Job Description", "Get Tailored Resume"].map((label, idx) => {
-            const stepIndex = step === "select-resume" || step === "upload-resume" ? 0 :
-                              step === "job-description" ? 1 :
-                              step === "tailoring" || step === "result" ? 2 : 0;
-            const isActive = idx === stepIndex;
-            const isCompleted = idx < stepIndex;
-            
-            return (
-              <div key={idx} className="flex items-center flex-1">
-                <div className="flex items-center gap-2 flex-1">
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center font-semibold ${
-                    isCompleted ? "bg-accent text-background" :
-                    isActive ? "bg-accent text-background" :
-                    "bg-steel/20 text-steel-light"
-                  }`}>
-                    {isCompleted ? "✓" : idx + 1}
-                  </div>
-                  <span className={`text-sm ${isActive ? "text-foreground font-semibold" : "text-steel-light"}`}>
-                    {label}
-                  </span>
-                </div>
-                {idx < 2 && <div className={`w-full h-0.5 mx-2 ${isCompleted ? "bg-accent" : "bg-steel/20"}`} />}
-              </div>
-            );
-          })}
-        </div>
+        {/* Progress Bar */}
+        {step !== "select-resume" && step !== "generating" && step !== "success" && (
+          <ProgressBar
+            currentStep={getCurrentStepNumber()}
+            totalSteps={TOTAL_STEPS}
+            onStepClick={handleStepClick}
+          />
+        )}
 
         {/* Error Message */}
         {error && (
@@ -209,188 +477,596 @@ export default function TailorResume() {
         )}
 
         {/* Step 1: Select Resume */}
-        {(step === "select-resume" || step === "upload-resume") && (
+        {step === "select-resume" && (
           <div className="bg-steel/5 rounded-2xl border border-steel/20 p-8">
-            {step === "select-resume" ? (
-              <>
-                <h3 className="text-2xl font-bold mb-6">Select a Resume</h3>
-                
-                {resumes.length > 0 ? (
-                  <div className="space-y-4 mb-6">
-                    {resumes.map((resume) => (
-                      <div
-                        key={resume.id}
-                        className="w-full p-4 bg-steel/10 rounded-xl border border-steel/20 hover:border-accent/50 hover:bg-steel/20 transition-all"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex-1">
-                            <p className="font-semibold text-foreground">
-                              {resume.name || `Resume from ${resume.parsed_at ? new Date(resume.parsed_at).toLocaleDateString() : 'Recently uploaded'}`}
-                            </p>
-                            <p className="text-sm text-steel-light mt-1">
-                              {resume.parsed_at ? new Date(resume.parsed_at).toLocaleDateString() : 'Recently uploaded'}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setPreviewResume(resume);
-                              }}
-                              className="p-2 hover:bg-steel/20 rounded-lg transition-colors"
-                              title="Preview"
-                            >
-                              <svg className="w-5 h-5 text-steel-light hover:text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                              </svg>
-                            </button>
-                            <button
-                              onClick={() => handleResumeSelect(resume)}
-                              className="p-2 hover:bg-steel/20 rounded-lg transition-colors"
-                              title="Select"
-                            >
-                              <svg className="w-5 h-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                              </svg>
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-center py-8 text-steel-light">
-                    <p className="mb-4">No resumes found</p>
-                  </div>
-                )}
+            <h3 className="text-2xl font-bold mb-6">Select a Resume</h3>
 
-                <button
-                  onClick={() => setShowUploadModal(true)}
-                  className="w-full py-3 px-6 border-2 border-dashed border-accent/40 rounded-xl text-accent hover:border-accent/60 hover:bg-accent/5 transition-colors font-semibold"
-                >
-                  + Upload New Resume
-                </button>
-              </>
+            {resumes.length > 0 ? (
+              <div className="space-y-4 mb-6">
+                {resumes.map((resume) => (
+                  <div
+                    key={resume.id}
+                    className="w-full p-4 bg-steel/10 rounded-xl border border-steel/20 hover:border-accent/50 hover:bg-steel/20 transition-all"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <p className="font-semibold text-foreground">
+                          {resume.name ||
+                            `Resume from ${resume.parsed_at ? new Date(resume.parsed_at).toLocaleDateString() : "Recently uploaded"}`}
+                        </p>
+                        <p className="text-sm text-steel-light mt-1">
+                          {resume.parsed_at
+                            ? new Date(resume.parsed_at).toLocaleDateString()
+                            : "Recently uploaded"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPreviewResume(resume);
+                          }}
+                          className="p-2 hover:bg-steel/20 rounded-lg transition-colors"
+                          title="Preview"
+                        >
+                          <svg
+                            className="w-5 h-5 text-steel-light hover:text-accent"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                            />
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                            />
+                          </svg>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedResume(resume);
+                            // Extract name from resume if available
+                            const extractedName = extractNameFromResume(resume);
+                            if (extractedName && !formData.cv_name) {
+                              setFormData(prev => ({ ...prev, cv_name: extractedName }));
+                            }
+                            handleNext();
+                          }}
+                          className="px-4 py-2 bg-accent text-background rounded-lg hover:bg-accent/90 transition-colors font-semibold"
+                        >
+                          Select
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             ) : (
-              <>
-                <h3 className="text-2xl font-bold mb-6">Upload Resume</h3>
-                <button
-                  onClick={() => setStep("select-resume")}
-                  className="mb-4 px-4 py-2 border border-steel/30 rounded-lg text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
-                >
-                  ← Back to Resume Selection
-                </button>
-              </>
+              <div className="text-center py-8 text-steel-light">
+                <p className="mb-4">No resumes found</p>
+              </div>
             )}
+
+            <button
+              onClick={() => setShowUploadModal(true)}
+              className="w-full py-3 px-6 border-2 border-dashed border-accent/40 rounded-xl text-accent hover:border-accent/60 hover:bg-accent/5 transition-colors font-semibold"
+            >
+              + Upload New Resume
+            </button>
           </div>
         )}
 
-        {/* Step 2: Job Description */}
-        {step === "job-description" && selectedResume && (
+        {/* Step 2: CV Name */}
+        {step === "cv-name" && (
           <div className="bg-steel/5 rounded-2xl border border-steel/20 p-8">
-            <h3 className="text-2xl font-bold mb-6">Enter Job Description</h3>
-            
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <p className="text-sm text-steel-light mb-2">Selected Resume:</p>
-                <p className="text-foreground font-medium">
-                  {selectedResume.name || selectedResume.file_path.split("/").pop()} • {selectedResume.parsed_at ? new Date(selectedResume.parsed_at).toLocaleDateString() : 'Recently uploaded'}
-                </p>
-              </div>
-              <button
-                onClick={() => setPreviewResume(selectedResume)}
-                className="px-4 py-2 bg-steel/10 hover:bg-steel/20 text-foreground rounded-lg transition-colors text-sm font-semibold flex items-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                </svg>
-                Preview
-              </button>
-            </div>
+            <h3 className="text-2xl font-bold mb-6">Your Name on CV</h3>
+            <p className="text-sm text-steel-light mb-4">
+              Enter the name you want to appear at the top of your CV. This will be displayed prominently on your resume.
+            </p>
 
-            <div className="mb-6">
-              <label className="block text-sm font-semibold text-foreground mb-2">
-                Paste the job description here
-              </label>
-              <textarea
-                value={jobDescription}
-                onChange={(e) => setJobDescription(e.target.value)}
-                placeholder="Paste the complete job description including requirements, responsibilities, and qualifications..."
-                className="w-full h-64 p-4 bg-background border border-steel/20 rounded-xl text-foreground placeholder-steel-light focus:outline-none focus:border-accent/50 resize-none"
-              />
-              <p className="text-xs text-steel-light mt-2">
-                {jobDescription.length} characters
-              </p>
-            </div>
+            <input
+              type="text"
+              value={formData.cv_name}
+              onChange={(e) => {
+                setFormData({ ...formData, cv_name: e.target.value });
+              }}
+              placeholder="e.g., John Doe, Jane Smith"
+              className="w-full p-4 bg-background border border-steel/20 rounded-xl text-foreground placeholder-steel-light focus:outline-none focus:border-accent/50"
+              required
+            />
+            <p className="text-xs text-steel-light mt-2">
+              {formData.cv_name ? `${formData.cv_name.length} characters` : "This name will appear at the top of your CV"}
+            </p>
 
-            <div className="flex gap-4">
+            <div className="flex gap-4 mt-6">
               <button
-                onClick={() => setStep("select-resume")}
+                onClick={handleBack}
                 className="px-6 py-3 border border-steel/30 rounded-xl text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
               >
                 ← Back
               </button>
               <button
-                onClick={handleTailor}
-                disabled={!jobDescription.trim()}
+                onClick={handleNext}
+                disabled={!formData.cv_name || formData.cv_name.trim().length === 0}
                 className="flex-1 px-6 py-3 bg-accent text-background rounded-xl font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Tailor Resume →
+                Continue →
               </button>
             </div>
           </div>
         )}
 
-        {/* Step 3: Tailoring in Progress */}
-        {step === "tailoring" && (
+        {/* Step 3: Job Description */}
+        {step === "job-description" && (
+          <div className="bg-steel/5 rounded-2xl border border-steel/20 p-8">
+            <h3 className="text-2xl font-bold mb-6">Job Description</h3>
+            <p className="text-sm text-steel-light mb-4">
+              Paste the complete job description including requirements, responsibilities, and
+              qualifications
+            </p>
+
+            <textarea
+              value={formData.job_description}
+              onChange={(e) => {
+                setFormData({ ...formData, job_description: e.target.value });
+                if (e.target.value.length > 100) {
+                  analyzeJobDescription(e.target.value);
+                }
+              }}
+              placeholder="Paste the complete job description here..."
+              className="w-full h-64 p-4 bg-background border border-steel/20 rounded-xl text-foreground placeholder-steel-light focus:outline-none focus:border-accent/50 resize-none"
+            />
+            <p className="text-xs text-steel-light mt-2">{formData.job_description.length} characters</p>
+
+            {aiSuggestions && <AISuggestions suggestions={aiSuggestions} />}
+
+            <div className="flex gap-4 mt-6">
+              <button
+                onClick={handleBack}
+                className="px-6 py-3 border border-steel/30 rounded-xl text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
+              >
+                ← Back
+              </button>
+              <button
+                onClick={handleNext}
+                disabled={!formData.job_description.trim()}
+                className="flex-1 px-6 py-3 bg-accent text-background rounded-xl font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Continue →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: Job Title */}
+        {step === "job-title" && (
+          <div className="bg-steel/5 rounded-2xl border border-steel/20 p-8">
+            <h3 className="text-2xl font-bold mb-6">Job Title</h3>
+            <p className="text-sm text-steel-light mb-4">What position are you applying for?</p>
+
+            <input
+              type="text"
+              value={formData.job_title}
+              onChange={(e) => setFormData({ ...formData, job_title: e.target.value })}
+              placeholder="e.g., Software Engineer, Product Manager"
+              className="w-full p-4 bg-background border border-steel/20 rounded-xl text-foreground placeholder-steel-light focus:outline-none focus:border-accent/50"
+            />
+
+            {aiSuggestions && (
+              <div className="mt-4 p-3 bg-accent/10 border border-accent/30 rounded-lg text-sm text-steel-light">
+                💡 Based on the job description, we suggest:{" "}
+                <span className="font-semibold text-accent">
+                  {extractJobTitle(formData.job_description) || "Job Title"}
+                </span>
+              </div>
+            )}
+
+            <div className="flex gap-4 mt-6">
+              <button
+                onClick={handleBack}
+                className="px-6 py-3 border border-steel/30 rounded-xl text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
+              >
+                ← Back
+              </button>
+              <button
+                onClick={handleNext}
+                disabled={!formData.job_title.trim()}
+                className="flex-1 px-6 py-3 bg-accent text-background rounded-xl font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Continue →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: Company Details */}
+        {step === "company-details" && (
+          <div className="bg-steel/5 rounded-2xl border border-steel/20 p-8">
+            <h3 className="text-2xl font-bold mb-6">Company Details (Optional)</h3>
+            <p className="text-sm text-steel-light mb-4">
+              Adding company information helps personalize your resume
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-foreground mb-2">
+                  Company Name
+                </label>
+                <input
+                  type="text"
+                  value={formData.company_name}
+                  onChange={(e) => setFormData({ ...formData, company_name: e.target.value })}
+                  placeholder="e.g., Google, Microsoft"
+                  className="w-full p-4 bg-background border border-steel/20 rounded-xl text-foreground placeholder-steel-light focus:outline-none focus:border-accent/50"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-foreground mb-2">
+                  Company Description
+                </label>
+                <textarea
+                  value={formData.company_description}
+                  onChange={(e) =>
+                    setFormData({ ...formData, company_description: e.target.value })
+                  }
+                  placeholder="Brief description about the company..."
+                  className="w-full h-32 p-4 bg-background border border-steel/20 rounded-xl text-foreground placeholder-steel-light focus:outline-none focus:border-accent/50 resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-4 mt-6">
+              <button
+                onClick={handleBack}
+                className="px-6 py-3 border border-steel/30 rounded-xl text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
+              >
+                ← Back
+              </button>
+              <button
+                onClick={handleNext}
+                className="flex-1 px-6 py-3 bg-accent text-background rounded-xl font-semibold hover:bg-accent/90 transition-colors"
+              >
+                Continue →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 5: Recruiter Details */}
+        {step === "recruiter-details" && (
+          <div className="bg-steel/5 rounded-2xl border border-steel/20 p-8">
+            <h3 className="text-2xl font-bold mb-6">Recruiter Details (Optional)</h3>
+
+            <RecruiterInfoBanner />
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-foreground mb-2">
+                  Recruiter Name
+                </label>
+                <input
+                  type="text"
+                  value={formData.recruiter_name}
+                  onChange={(e) => setFormData({ ...formData, recruiter_name: e.target.value })}
+                  placeholder="e.g., John Smith"
+                  className="w-full p-4 bg-background border border-steel/20 rounded-xl text-foreground placeholder-steel-light focus:outline-none focus:border-accent/50"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-foreground mb-2">
+                  Recruiter Email
+                </label>
+                <input
+                  type="email"
+                  value={formData.recruiter_email}
+                  onChange={(e) => setFormData({ ...formData, recruiter_email: e.target.value })}
+                  placeholder="recruiter@company.com"
+                  className="w-full p-4 bg-background border border-steel/20 rounded-xl text-foreground placeholder-steel-light focus:outline-none focus:border-accent/50"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-4 mt-6">
+              <button
+                onClick={handleBack}
+                className="px-6 py-3 border border-steel/30 rounded-xl text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
+              >
+                ← Back
+              </button>
+              <button
+                onClick={handleNext}
+                className="flex-1 px-6 py-3 bg-accent text-background rounded-xl font-semibold hover:bg-accent/90 transition-colors"
+              >
+                Continue →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 6: Additional Context */}
+        {step === "additional-context" && (
+          <div className="bg-steel/5 rounded-2xl border border-steel/20 p-8">
+            <h3 className="text-2xl font-bold mb-6">Additional Context (Optional)</h3>
+            <p className="text-sm text-steel-light mb-4">
+              Any additional notes, requirements, or context that might help
+            </p>
+
+            <textarea
+              value={formData.additional_notes}
+              onChange={(e) => setFormData({ ...formData, additional_notes: e.target.value })}
+              placeholder="Any other information that might help personalize your resume..."
+              className="w-full h-48 p-4 bg-background border border-steel/20 rounded-xl text-foreground placeholder-steel-light focus:outline-none focus:border-accent/50 resize-none"
+            />
+
+            <div className="flex gap-4 mt-6">
+              <button
+                onClick={handleBack}
+                className="px-6 py-3 border border-steel/30 rounded-xl text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
+              >
+                ← Back
+              </button>
+              <button
+                onClick={handleNext}
+                className="flex-1 px-6 py-3 bg-accent text-background rounded-xl font-semibold hover:bg-accent/90 transition-colors"
+              >
+                Continue →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 7: Review */}
+        {step === "review" && (
+          <div className="bg-steel/5 rounded-2xl border border-steel/20 p-8">
+            <h3 className="text-2xl font-bold mb-6">Review & Generate</h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              <div className="space-y-4">
+                <h4 className="font-semibold text-foreground">CV Information</h4>
+                <div className="bg-background rounded-xl p-4 border border-steel/20 space-y-2 text-sm">
+                  {formData.cv_name && (
+                    <p>
+                      <span className="text-steel-light">Name on CV:</span>{" "}
+                      <span className="font-semibold">{formData.cv_name}</span>
+                    </p>
+                  )}
+                </div>
+                <h4 className="font-semibold text-foreground">Job Information</h4>
+                <div className="bg-background rounded-xl p-4 border border-steel/20 space-y-2 text-sm">
+                  <p>
+                    <span className="text-steel-light">Title:</span>{" "}
+                    <span className="font-semibold">{formData.job_title}</span>
+                  </p>
+                  {formData.job_level && (
+                    <p>
+                      <span className="text-steel-light">Level:</span>{" "}
+                      <span className="font-semibold capitalize">{formData.job_level}</span>
+                      <span className="text-xs text-steel-light ml-2">(AI-detected)</span>
+                    </p>
+                  )}
+                  {formData.domain && (
+                    <p>
+                      <span className="text-steel-light">Domain:</span>{" "}
+                      <span className="font-semibold capitalize">{formData.domain}</span>
+                      <span className="text-xs text-steel-light ml-2">(AI-detected)</span>
+                    </p>
+                  )}
+                  {formData.company_name && (
+                    <p>
+                      <span className="text-steel-light">Company:</span>{" "}
+                      <span className="font-semibold">{formData.company_name}</span>
+                    </p>
+                  )}
+                  {formData.recruiter_email && (
+                    <p>
+                      <span className="text-steel-light">Recruiter:</span>{" "}
+                      <span className="font-semibold">{formData.recruiter_email}</span>
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="font-semibold text-foreground mb-4">CV Template</h4>
+                <select
+                  value={formData.template}
+                  onChange={(e) => setFormData({ ...formData, template: e.target.value })}
+                  className="w-full p-4 bg-background border border-steel/20 rounded-xl text-foreground focus:outline-none focus:border-accent/50"
+                >
+                  <option value="modern">Modern</option>
+                  <option value="classic">Classic</option>
+                  <option value="creative">Creative</option>
+                  <option value="ats-friendly">ATS-Friendly</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex gap-4 mt-6">
+              <button
+                onClick={handleBack}
+                className="px-6 py-3 border border-steel/30 rounded-xl text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
+              >
+                ← Back
+              </button>
+              <button
+                onClick={handleGenerateCV}
+                className="flex-1 px-6 py-3 bg-accent text-background rounded-xl font-semibold hover:bg-accent/90 transition-colors"
+              >
+                Generate Custom CV →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 10: Generating */}
+        {step === "generating" && (
           <div className="bg-steel/5 rounded-2xl border border-steel/20 p-12 text-center">
             <div className="w-16 h-16 border-4 border-accent border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <h3 className="text-2xl font-bold mb-2">Tailoring Your Resume...</h3>
-            <p className="text-steel-light">
-              Our AI is analyzing the job description and optimizing your resume
-            </p>
+            <h3 className="text-2xl font-bold mb-2">Generating Your Custom CV...</h3>
+            <p className="text-steel-light">This may take a few moments</p>
           </div>
         )}
 
-        {/* Step 4: Result */}
-        {step === "result" && tailoredResume && (
+        {/* Step 11: Success */}
+        {step === "success" && (
           <div className="bg-steel/5 rounded-2xl border border-steel/20 p-8">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Your Tailored Resume</h3>
+            <div className="text-center mb-8">
+              <div className="w-16 h-16 bg-accent/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg
+                  className="w-8 h-8 text-accent"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M5 13l4 4L19 7"
+                  />
+                </svg>
+              </div>
+              <h3 className="text-2xl font-bold mb-2">CV Generated Successfully!</h3>
+              <p className="text-steel-light">
+                {applicationId
+                  ? "Your custom CV has been generated and saved to your applications"
+                  : "Your custom CV has been generated. Download it and save to track your application."}
+              </p>
+            </div>
+
+            <div className="space-y-4 mb-6">
               <button
-                onClick={() => {
-                  navigator.clipboard.writeText(tailoredResume);
-                  alert("Copied to clipboard!");
-                }}
-                className="px-4 py-2 bg-accent/20 text-accent rounded-lg hover:bg-accent/30 transition-colors text-sm font-semibold"
+                onClick={() => handleDownload("docx")}
+                className="w-full px-6 py-4 bg-accent text-background rounded-xl font-semibold hover:bg-accent/90 transition-colors flex items-center justify-center gap-2"
               >
-                Copy
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                  />
+                </svg>
+                Download as DOCX (ATS-Friendly)
+              </button>
+              <p className="text-xs text-center text-steel-light">
+                💡 <strong>Tip:</strong> Most ATS-friendly CVs are in DOCX format. Use this if
+                allowed by the application system.
+              </p>
+
+              <button
+                onClick={() => handleDownload("pdf")}
+                className="w-full px-6 py-4 bg-steel/10 text-foreground rounded-xl font-semibold hover:bg-steel/20 transition-colors flex items-center justify-center gap-2 border border-steel/20"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                  />
+                </svg>
+                Download as PDF
               </button>
             </div>
 
-            <div className="bg-background rounded-xl p-6 border border-steel/20 mb-6">
-              <pre className="whitespace-pre-wrap text-foreground text-sm font-mono">
-                {tailoredResume}
-              </pre>
-            </div>
+            {/* Save Application Button */}
+            {!applicationId && (
+              <div className="mb-6">
+                <button
+                  onClick={handleSaveApplication}
+                  className="w-full px-6 py-4 bg-gradient-to-r from-accent to-accent/80 text-background rounded-xl font-semibold hover:from-accent/90 hover:to-accent/70 transition-all flex items-center justify-center gap-2 shadow-lg shadow-accent/20"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"
+                    />
+                  </svg>
+                  Save Application to Track
+                </button>
+                <p className="text-xs text-center text-steel-light mt-2">
+                  Save this application to track your job applications and follow up with recruiters
+                </p>
+              </div>
+            )}
+
+            {/* Cover Letter CTA */}
+            {applicationId && (
+              <div className="mb-6 p-6 bg-gradient-to-br from-accent/10 via-accent/5 to-accent/10 rounded-2xl border-2 border-accent/30">
+                <div className="text-center">
+                  <h4 className="text-xl font-bold text-foreground mb-2">
+                    Complete Your Application
+                  </h4>
+                  <p className="text-steel-light mb-4">
+                    Stand out with a personalized cover letter tailored to this role
+                  </p>
+                  <button
+                    onClick={() => router.push(`/dashboard/cover-letter/${applicationId}`)}
+                    className="w-full px-6 py-4 bg-accent text-background rounded-xl font-semibold hover:bg-accent/90 transition-colors flex items-center justify-center gap-2 shadow-lg shadow-accent/20"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                      />
+                    </svg>
+                    Draft a Cover Letter
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {applicationId && (
+              <div className="mb-6 p-4 bg-accent/10 border border-accent/30 rounded-xl">
+                <div className="flex items-center gap-2 text-accent">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  <span className="font-semibold">Application saved successfully!</span>
+                </div>
+              </div>
+            )}
 
             <div className="flex gap-4">
               <button
                 onClick={() => {
-                  setStep("job-description");
-                  setTailoredResume("");
+                  setStep("select-resume");
+                  setFormData({
+                    job_title: "",
+                    job_description: "",
+                    job_level: "",
+                    domain: "",
+                    company_name: "",
+                    company_description: "",
+                    recruiter_name: "",
+                    recruiter_email: "",
+                    additional_notes: "",
+                    template: "modern",
+                  });
+                  setSelectedResume(null);
                 }}
-                className="px-6 py-3 border border-steel/30 rounded-xl text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
+                className="flex-1 px-6 py-3 border border-steel/30 rounded-xl text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
               >
-                ← Tailor Again
-              </button>
-              <button
-                onClick={() => setStep("select-resume")}
-                className="px-6 py-3 border border-steel/30 rounded-xl text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
-              >
-                Select Different Resume
+                Apply to Another Job
               </button>
               <button
                 onClick={() => router.push("/dashboard")}
@@ -405,20 +1081,25 @@ export default function TailorResume() {
 
       {/* Upload Modal */}
       {showUploadModal && user?.id && (
-        <OnboardingModal
-          userId={user.id}
-          onComplete={handleResumeUploadComplete}
-        />
+        <OnboardingModal userId={user.id} onComplete={() => setShowUploadModal(false)} />
       )}
 
       {/* Preview Modal */}
       {previewResume && (
-        <ResumePreview
-          resume={previewResume}
-          onClose={() => setPreviewResume(null)}
-        />
+        <ResumePreview resume={previewResume} onClose={() => setPreviewResume(null)} />
       )}
     </div>
   );
+}
+
+function extractJobTitle(description: string): string {
+  // Simple extraction - in production, use AI
+  const lines = description.split("\n").slice(0, 5);
+  for (const line of lines) {
+    if (line.match(/^(Senior|Junior|Lead|Principal|Staff)?\s*[A-Z][a-z]+/)) {
+      return line.trim();
+    }
+  }
+  return "";
 }
 
