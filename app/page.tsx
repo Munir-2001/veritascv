@@ -34,7 +34,10 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <>
+      <StructuredData type="WebApplication" />
+      <StructuredData type="Organization" />
+      <div className="min-h-screen bg-background text-foreground">
       {/* Navigation */}
       <header className="w-full border-b border-steel/20 sticky top-0 bg-background/95 backdrop-blur-md z-50 shadow-sm">
         <nav className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
@@ -337,5 +340,6 @@ export default function Home() {
         </div>
       </footer>
     </div>
+    </>
   );
 }
