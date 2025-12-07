@@ -9,7 +9,7 @@
  * - Local/Open Source (Ollama, etc.)
  */
 
-export type AIProvider = "gemini" | "groq" | "openai" | "anthropic" | "local" | "huggingface" | "together" | "openrouter";
+export type AIProvider = "gemini" | "groq" | "openai" | "anthropic" | "local" | "huggingface" | "together" | "openrouter" | "moonshot";
 
 export interface AIConfig {
   provider: AIProvider;

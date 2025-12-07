@@ -23,15 +23,18 @@ export interface FallbackConfig {
  * 1. Gemini (Google): 15 RPM, 1M tokens/day (free tier)
  * 2. Groq: 30 RPM, 14,400 requests/day (very generous free tier)
  * 3. Hugging Face: 1,000 requests/month (free tier)
- * 4. Together AI: $25 free credits (one-time)
- * 5. OpenRouter: $5 free credits (one-time)
- * 6. Anthropic: Limited free tier
+ * 4. Together AI: $25 free credits (one-time) - includes Kimi-k2
+ * 5. Moonshot AI: Kimi-k2 official provider (check pricing)
+ * 6. OpenRouter: $5 free credits (one-time) - includes Kimi-k2
+ * 7. Anthropic: Limited free tier
  * 
  * RECOMMENDED ORDER (best free options first):
  * 1. Groq (fastest, most generous free tier)
  * 2. Gemini (good quality, decent free tier)
  * 3. Hugging Face (backup option)
- * 4. Together AI (if credits available)
+ * 4. Together AI (if credits available) - includes Kimi-k2
+ * 5. Moonshot AI (Kimi-k2 official)
+ * 6. OpenRouter (if credits available) - includes Kimi-k2
  */
 export const FREE_AI_PROVIDERS: FallbackConfig[] = [
   // Priority 1: Groq (FASTEST, most generous free tier - 30 RPM, 14.4K requests/day)
@@ -75,18 +78,35 @@ export const FREE_AI_PROVIDERS: FallbackConfig[] = [
     priority: 7,
   },
   
-  // Priority 4: Together AI (if credits available)
+  // Priority 4: Together AI (if credits available) - includes Kimi-k2
   {
     provider: "together",
     model: "meta-llama/Llama-3-70b-chat-hf",
     priority: 8,
   },
+  {
+    provider: "together",
+    model: "Qwen/Qwen2.5-72B-Instruct", // Kimi-k2 alternative on Together
+    priority: 8,
+  },
   
-  // Priority 5: OpenRouter (if credits available)
+  // Priority 5: Moonshot AI (Kimi-k2 official provider)
+  {
+    provider: "moonshot",
+    model: "kimi-k2", // Official Kimi-k2 model
+    priority: 9,
+  },
+  
+  // Priority 6: OpenRouter (if credits available) - includes Kimi-k2
   {
     provider: "openrouter",
     model: "google/gemini-2.0-flash-exp:free",
-    priority: 9,
+    priority: 10,
+  },
+  {
+    provider: "openrouter",
+    model: "moonshot/kimi-k2", // Kimi-k2 via OpenRouter
+    priority: 10,
   },
 ];
 
@@ -159,6 +179,44 @@ export function getFallbackConfigs(): FallbackConfig[] {
       apiKey: process.env.OPENROUTER_API_KEY,
       priority: 12,
     });
+    // Add Kimi-k2 option if available
+    if (process.env.OPENROUTER_MODEL_KIMI) {
+      configs.push({
+        provider: "openrouter",
+        model: process.env.OPENROUTER_MODEL_KIMI || "moonshot/kimi-k2",
+        apiKey: process.env.OPENROUTER_API_KEY,
+        priority: 13,
+      });
+    }
+  }
+  
+  // Check for Moonshot AI (Kimi-k2 official)
+  if (process.env.MOONSHOT_API_KEY) {
+    configs.push({
+      provider: "moonshot",
+      model: process.env.MOONSHOT_MODEL || "kimi-k2",
+      apiKey: process.env.MOONSHOT_API_KEY,
+      priority: 11,
+    });
+  }
+  
+  // Check for Together AI - add Kimi-k2 option
+  if (process.env.TOGETHER_API_KEY) {
+    configs.push({
+      provider: "together",
+      model: process.env.TOGETHER_MODEL || "meta-llama/Llama-3-70b-chat-hf",
+      apiKey: process.env.TOGETHER_API_KEY,
+      priority: 11,
+    });
+    // Add Kimi-k2 via Together if specified
+    if (process.env.TOGETHER_MODEL_KIMI) {
+      configs.push({
+        provider: "together",
+        model: process.env.TOGETHER_MODEL_KIMI || "Qwen/Qwen2.5-72B-Instruct",
+        apiKey: process.env.TOGETHER_API_KEY,
+        priority: 12,
+      });
+    }
   }
   
   // Sort by priority
@@ -233,7 +291,10 @@ export async function callAIWithFallback(
     `Please check your API keys and quotas. Free tier options:\n` +
     `1. Groq: https://console.groq.com/ (30 RPM, 14.4K requests/day)\n` +
     `2. Gemini: https://aistudio.google.com/apikey (15 RPM, 1M tokens/day)\n` +
-    `3. Hugging Face: https://huggingface.co/settings/tokens (1K requests/month)`
+    `3. Hugging Face: https://huggingface.co/settings/tokens (1K requests/month)\n` +
+    `4. Moonshot AI (Kimi-k2): https://platform.moonshot.cn/ (check pricing)\n` +
+    `5. Together AI: https://api.together.xyz/ ($25 free credits, includes Kimi-k2)\n` +
+    `6. OpenRouter: https://openrouter.ai/ ($5 free credits, includes Kimi-k2)`
   );
 }
 
@@ -252,6 +313,8 @@ async function callAIProvider(prompt: string, config: FallbackConfig): Promise<s
       return await callTogetherProvider(prompt, config);
     case "openrouter":
       return await callOpenRouterProvider(prompt, config);
+    case "moonshot":
+      return await callMoonshotProvider(prompt, config);
     default:
       throw new Error(`Unsupported provider: ${config.provider}`);
   }
@@ -391,6 +454,39 @@ async function callOpenRouterProvider(prompt: string, config: FallbackConfig): P
   if (!response.ok) {
     const error = await response.text();
     throw new Error(`OpenRouter API error (${response.status}): ${error}`);
+  }
+  
+  const data = await response.json();
+  return data.choices[0]?.message?.content || "";
+}
+
+/**
+ * Call Moonshot AI API (Kimi-k2 official provider)
+ */
+async function callMoonshotProvider(prompt: string, config: FallbackConfig): Promise<string> {
+  if (!config.apiKey) {
+    throw new Error("Moonshot API key not provided");
+  }
+  
+  // Moonshot AI uses OpenAI-compatible API
+  const baseURL = config.baseURL || "https://api.moonshot.cn/v1";
+  
+  const response = await fetch(`${baseURL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${config.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: config.model || "kimi-k2",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.7,
+    }),
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Moonshot API error (${response.status}): ${error}`);
   }
   
   const data = await response.json();
