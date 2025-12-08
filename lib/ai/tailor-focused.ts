@@ -116,6 +116,11 @@ export async function tailorResumeWithFocusedPrompts(
   console.log(`[Focused Tailoring] Model: ${config.model}`);
   console.log(`[Focused Tailoring] API Key: ${config.apiKey ? "✅ Set" : "❌ Missing"}`);
   console.log(`[Focused Tailoring] Raw text length: ${request.raw_text.length} chars`);
+  console.log(`[Focused Tailoring] Raw text preview (first 500 chars): ${request.raw_text.substring(0, 500)}`);
+  console.log(`[Focused Tailoring] Has structured_data: ${!!request.structured_data}`);
+  if (request.structured_data?.experience) {
+    console.log(`[Focused Tailoring] Structured data has ${request.structured_data.experience.length} experience entries`);
+  }
   console.log(`[Focused Tailoring] Strategy: Level=${request.job_level}, Domain=${request.domain}`);
   console.log(`[Focused Tailoring] Section order: ${strategy.sectionOrder.join(", ")}`);
   
@@ -186,7 +191,8 @@ export async function tailorResumeWithFocusedPrompts(
     keywords,
     strategy,
     toneInstructions,
-    config
+    config,
+    request.structured_data // Pass structured_data for fallback
   );
 
   // Step 3: Projects Matching
@@ -198,7 +204,8 @@ export async function tailorResumeWithFocusedPrompts(
     keywords,
     strategy,
     toneInstructions,
-    config
+    config,
+    request.structured_data // Pass structured_data for fallback
   );
 
   // Step 4: Technical Skills Extraction
@@ -275,7 +282,7 @@ CANDIDATE'S RESUME (raw text):
 ${rawText.substring(0, 4000)}${rawText.length > 4000 ? "\n[... truncated ...]" : ""}
 
 TASK:
-Generate a compelling "Career Objective" section that is EXACTLY 40 words (no more, no less) that:
+Generate a compelling "Career Objective" section that is EXACTLY 50 words (no more, no less) that:
 1. Uses the candidate's actual background, experience, and education from the resume
 2. Shows career aspirations and goals that align with the job description
 3. Mentions specific goals related to the role (e.g., "aspiring to lead ML projects", "seeking to contribute to scalable systems")
@@ -290,14 +297,14 @@ FORMAT:
 - End with what they aim to achieve/contribute
 
 CRITICAL REQUIREMENTS:
-- EXACTLY 40 words (count carefully)
+- EXACTLY 50 words (count carefully)
 - Hyper-personalized to the candidate's background
 - Must include career aspirations/goals related to the job
 - Must show alignment with job description
 - Use ONLY information from the candidate's resume (don't fabricate)
 - Professional but passionate tone
 
-Return ONLY the Career Objective text (EXACTLY 40 words), no markdown, no JSON, just the paragraph.`;
+Return ONLY the Career Objective text (EXACTLY 50 words), no markdown, no JSON, just the paragraph.`;
 
   try {
     const response = await callGemini(prompt, config);
@@ -332,7 +339,7 @@ CANDIDATE'S RESUME (raw text):
 ${rawText.substring(0, 4000)}${rawText.length > 4000 ? "\n[... truncated ...]" : ""}
 
 TASK:
-Generate a 3-4 line professional summary written in FIRST PERSON (use "I", "my", "me") that:
+Generate a professional summary written in FIRST PERSON (use "I", "my", "me") that is EXACTLY 50 words (no more, no less):
 1. Mirrors the job title and level
 2. Includes the top 5 most relevant keywords from the job description
 3. Highlights the candidate's most relevant experience and achievements (from the raw text above)
@@ -343,6 +350,7 @@ Generate a 3-4 line professional summary written in FIRST PERSON (use "I", "my",
 
 CRITICAL REQUIREMENTS:
 - MUST be in FIRST PERSON (I, my, me) - NOT third person
+- **EXACTLY 50 words (count carefully) - no more, no less**
 - **USE THE CANDIDATE'S ACTUAL YEARS OF EXPERIENCE FROM THE CANDIDATE CONTEXT** - DO NOT use years from the job description requirements
 - If candidate context shows "Years of Experience: X", use that EXACT number (e.g., "5 years", "3 years")
 - If candidate has MORE experience than job requires, use a confident, powerful tone
@@ -350,7 +358,6 @@ CRITICAL REQUIREMENTS:
 - Extract actual experience from the raw text (don't fabricate)
 - Use specific technologies/skills mentioned in the job AND candidate's strong skills
 - Reference candidate's domain experience and years of experience from candidate context
-- Keep it concise (3-4 lines max)
 - Make it compelling, personalized, and ATS-friendly
 - Use the candidate context to personalize (mention their domain, key skills, achievements)
 
@@ -361,7 +368,7 @@ EXAMPLES (using candidate's actual years):
 
 IMPORTANT: The candidate context above shows the candidate's ACTUAL years of experience. Use that number, NOT the job requirement!
 
-Return ONLY the summary text in FIRST PERSON, no markdown, no JSON, just the summary paragraph.`;
+Return ONLY the summary text in FIRST PERSON (EXACTLY 50 words), no markdown, no JSON, just the summary paragraph.`;
 
   try {
     const response = await callGemini(prompt, config);
@@ -383,8 +390,18 @@ async function optimizeExperience(
   keywords: string[],
   strategy: any,
   toneInstructions: string,
-  config: any
+  config: any,
+  structuredData?: any
 ): Promise<TailoredSections["experience"]> {
+  // Log raw text info for debugging
+  console.log(`[Focused Tailoring] optimizeExperience - rawText length: ${rawText.length} chars`);
+  console.log(`[Focused Tailoring] optimizeExperience - rawText preview: ${rawText.substring(0, 200)}...`);
+  
+  if (!rawText || rawText.trim().length === 0) {
+    console.error(`[Focused Tailoring] ⚠️ WARNING: rawText is empty! Using fallback extraction...`);
+    return extractExperienceFallback(rawText, structuredData);
+  }
+
   const prompt = `You are an expert resume writer. Extract and optimize work experience from a resume.
 
 ${jobContext}
@@ -393,28 +410,37 @@ ${candidateContext}
 
 ${toneInstructions}
 
-KEYWORDS TO MATCH: ${keywords.slice(0, 20).join(", ")}
+TECH STACK FROM JOB DESCRIPTION (CRITICAL - USE THESE IN EVERY BULLET):
+${keywords.slice(0, 30).join(", ")}
 
-CANDIDATE'S RESUME (raw text):
+KEYWORDS TO MATCH: ${keywords.slice(0, 30).join(", ")}
+
+CANDIDATE'S RESUME (raw text - EXTRACT ALL WORK EXPERIENCE FROM THIS):
 ${rawText}
 
-IMPORTANT: The JOB DESCRIPTION above contains the requirements and responsibilities for the position. Use it to:
+CRITICAL: The raw text above contains the candidate's work experience. You MUST extract ALL jobs mentioned. Look for sections like "PROFESSIONAL EXPERIENCE", "WORK EXPERIENCE", "EMPLOYMENT", or job titles followed by company names and dates. DO NOT return an empty array - if you see any job titles, companies, or dates, extract them.
+
+IMPORTANT: The JOB DESCRIPTION above contains the CORE TECH STACK and requirements for the position. You MUST:
+- **PRIORITIZE matching the tech stack keywords listed above** - these are the technologies the job requires
+- **WEAVE tech stack keywords into EVERY bullet point** - mention specific technologies from the job description
 - Match the language and terminology used in the job description
 - Align bullet points with the specific requirements mentioned
 - Use similar phrasing and keywords from the job description
-- Ensure each bullet point addresses something relevant to the job
+- Ensure each bullet point addresses something relevant to the job AND mentions relevant tech stack items
 
 TASK:
 1. EXTRACT all work experience from the raw text (job titles, companies, dates, responsibilities)
 2. For EACH job, create EXACTLY 2 highly impactful bullet points that:
-   - Start with strong action verbs (Led, Developed, Architected, etc.)
+   - **MUST mention at least 1-2 technologies from the tech stack list above** (even if not originally in the resume)
+   - Start with strong action verbs (Led, Developed, Architected, Built, Implemented, etc.)
    - Closely match and resemble the job description requirements
    - Use existing bullets from the resume but enhance them to match job description
-   - Weave in job keywords naturally (from the list above)
+   - Weave in job keywords naturally (from the tech stack list above)
    - Add quantifiable metrics (%, $, team size, users, time saved) - estimate reasonably if not present
    - Show IMPACT and RESULTS that align with job requirements
    - Use similar language/phrasing as the job description
    - Highlight achievements that directly address job requirements
+   - **Example format: "Developed [tech from job] solution using [tech from job], achieving [metric]"**
 
 3. Format each experience entry as:
 {
@@ -451,15 +477,156 @@ Return ONLY valid JSON array of experience entries (EACH entry MUST have bullets
 ]`;
 
   try {
+    console.log(`[Focused Tailoring] Sending prompt to AI (prompt length: ${prompt.length} chars)`);
+    console.log(`[Focused Tailoring] - rawText length in prompt: ${rawText.length} chars`);
+    console.log(`[Focused Tailoring] - rawText preview in prompt: ${rawText.substring(0, 100)}...`);
+    console.log(`[Focused Tailoring] - Prompt includes rawText: ${prompt.includes(rawText.substring(0, 50))}`);
     const response = await callGemini(prompt, config);
     const cleaned = cleanJSONResponse(response);
-    const experience = JSON.parse(cleaned);
+    let experience: any[];
+    
+    try {
+      experience = JSON.parse(cleaned);
+    } catch (parseError) {
+      console.error(`[Focused Tailoring] Failed to parse experience JSON:`, parseError);
+      console.error(`[Focused Tailoring] Response was:`, cleaned.substring(0, 500));
+      return extractExperienceFallback(rawText, structuredData);
+    }
+    
     console.log(`[Focused Tailoring] Experience extracted: ${experience.length} jobs`);
+    if (experience.length > 0) {
+      console.log(`[Focused Tailoring] Experience data sample:`, JSON.stringify(experience[0]).substring(0, 200));
+    }
+    
+    // Validate that we got experience entries - ALWAYS use fallback if empty
+    if (!Array.isArray(experience) || experience.length === 0) {
+      console.warn(`[Focused Tailoring] ⚠️ AI returned empty/invalid experience array (length: ${experience?.length || 0}), using fallback...`);
+      const fallbackExperience = extractExperienceFallback(rawText, structuredData);
+      console.log(`[Focused Tailoring] ✅ Fallback returned ${fallbackExperience.length} experience entries`);
+      if (fallbackExperience.length === 0) {
+        console.error(`[Focused Tailoring] ❌ CRITICAL: Fallback also returned 0 entries! Check structured_data and raw_text.`);
+      }
+      return fallbackExperience;
+    }
+    
     return experience;
   } catch (error: any) {
     console.error(`[Focused Tailoring] Experience extraction failed:`, error);
-    return []; // Fallback
+    console.log(`[Focused Tailoring] Using fallback experience extraction...`);
+    return extractExperienceFallback(rawText, structuredData);
   }
+}
+
+/**
+ * Fallback: Extract experience from raw text when AI fails
+ */
+function extractExperienceFallback(rawText: string, structuredData?: any): TailoredSections["experience"] {
+  const experience: TailoredSections["experience"] = [];
+  
+  console.log(`[Focused Tailoring] 🔄 extractExperienceFallback called`);
+  console.log(`[Focused Tailoring] - rawText length: ${rawText?.length || 0}`);
+  console.log(`[Focused Tailoring] - structuredData exists: ${!!structuredData}`);
+  console.log(`[Focused Tailoring] - structuredData.experience: ${structuredData?.experience?.length || 0} entries`);
+  
+  // First, try to use structured_data if available
+  if (structuredData?.experience && Array.isArray(structuredData.experience) && structuredData.experience.length > 0) {
+    console.log(`[Focused Tailoring] ✅ Using structured_data experience (${structuredData.experience.length} jobs)`);
+    const mapped = structuredData.experience.map((exp: any) => {
+      // Ensure bullets array - need at least 2 bullets
+      let bullets = exp.bullets || [];
+      if (!bullets.length && exp.description) {
+        bullets = [exp.description];
+      }
+      if (!bullets.length && exp.responsibilities) {
+        bullets = Array.isArray(exp.responsibilities) ? exp.responsibilities : [exp.responsibilities];
+      }
+      // Ensure we have at least 2 bullets
+      if (bullets.length === 0) {
+        bullets = [`Worked as ${exp.title || exp.job_title || "professional"} at ${exp.company || exp.company_name || "company"}`];
+      }
+      if (bullets.length === 1) {
+        bullets.push(`Contributed to key projects and initiatives at ${exp.company || exp.company_name || "the organization"}`);
+      }
+      
+      return {
+        title: exp.title || exp.job_title || "Position",
+        company: exp.company || exp.company_name || "Company",
+        duration: exp.duration || exp.period || (exp.start_date && exp.end_date ? `${exp.start_date} - ${exp.end_date}` : "") || "",
+        location: exp.location || "",
+        bullets: bullets.slice(0, 2), // Ensure exactly 2 bullets
+      };
+    });
+    console.log(`[Focused Tailoring] ✅ Mapped ${mapped.length} experience entries from structured_data`);
+    return mapped;
+  }
+  
+  // Fallback: Extract from raw text using regex patterns
+  console.log(`[Focused Tailoring] Extracting experience from raw text (${rawText.length} chars)...`);
+  
+  // Pattern 1: "Job Title - Company - Date - Date"
+  const pattern1 = /([A-Z][^•\n\-]{5,60})\s*[-–]\s*([A-Z][^•\n\-]{3,50})\s*[-–]\s*([A-Za-z]+\s+\d{4}|\d{4})\s*[-–]\s*([A-Za-z]+\s+\d{4}|Present|Current|\d{4})?/gi;
+  
+  // Pattern 2: Look for "PROFESSIONAL EXPERIENCE" section
+  const expSectionMatch = rawText.match(/(?:PROFESSIONAL EXPERIENCE|WORK EXPERIENCE|EMPLOYMENT|EXPERIENCE)[\s\S]{0,3000}/i);
+  
+  if (expSectionMatch) {
+    const expSection = expSectionMatch[0];
+    
+    // Extract job entries (look for patterns like "Job Title - Company - Date")
+    let match;
+    pattern1.lastIndex = 0;
+    while ((match = pattern1.exec(expSection)) !== null && experience.length < 10) {
+      const title = match[1]?.trim();
+      const company = match[2]?.trim();
+      const startDate = match[3]?.trim();
+      const endDate = match[4]?.trim() || "Present";
+      
+      if (title && company) {
+        // Find bullets for this job (next few lines after the job title)
+        const jobStart = match.index || 0;
+        const nextJobMatch = expSection.substring(jobStart + 100).match(/([A-Z][^•\n\-]{5,60})\s*[-–]\s*([A-Z][^•\n\-]{3,50})/);
+        const jobEnd = nextJobMatch ? jobStart + 100 + (nextJobMatch.index || 0) : jobStart + 500;
+        const jobText = expSection.substring(jobStart, jobEnd);
+        
+        // Extract bullets
+        const bullets = jobText.match(/[•\-\*]\s*([^\n]{15,200})/g) || [];
+        const formattedBullets = bullets.slice(0, 2).map(b => b.replace(/^[•\-\*]\s*/, "").trim());
+        
+        experience.push({
+          title,
+          company,
+          duration: `${startDate} - ${endDate}`,
+          location: "",
+          bullets: formattedBullets.length > 0 ? formattedBullets : [`Worked on ${title} at ${company}`],
+        });
+      }
+    }
+  }
+  
+  // If still no experience found, try simpler pattern
+  if (experience.length === 0) {
+    const simplePattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*[-–]\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*[-–]\s*([A-Za-z]+\s+\d{4}|\d{4})/gi;
+    let match;
+    while ((match = simplePattern.exec(rawText)) !== null && experience.length < 5) {
+      experience.push({
+        title: match[1]?.trim() || "Position",
+        company: match[2]?.trim() || "Company",
+        duration: match[3]?.trim() || "",
+        location: "",
+        bullets: [`Worked as ${match[1]} at ${match[2]}`],
+      });
+    }
+  }
+  
+  console.log(`[Focused Tailoring] Fallback extracted ${experience.length} experience entries`);
+  
+  if (experience.length === 0) {
+    console.error(`[Focused Tailoring] ❌ CRITICAL: Fallback also returned 0 experience entries!`);
+    console.error(`[Focused Tailoring] Raw text length: ${rawText?.length || 0}`);
+    console.error(`[Focused Tailoring] Raw text sample: ${rawText?.substring(0, 500) || "EMPTY"}`);
+  }
+  
+  return experience;
 }
 
 /**
@@ -472,7 +639,8 @@ async function matchProjects(
   keywords: string[],
   strategy: any,
   toneInstructions: string,
-  config: any
+  config: any,
+  structuredData?: any
 ): Promise<TailoredSections["projects"]> {
   // Skip projects for senior/executive if strategy says so
   if (strategy.projectsImportance === "skip") {
@@ -488,28 +656,37 @@ ${candidateContext}
 
 ${toneInstructions}
 
-KEYWORDS TO MATCH: ${keywords.slice(0, 20).join(", ")}
+TECH STACK FROM JOB DESCRIPTION (CRITICAL - USE THESE IN EVERY PROJECT):
+${keywords.slice(0, 30).join(", ")}
 
-CANDIDATE'S RESUME (raw text):
+KEYWORDS TO MATCH: ${keywords.slice(0, 30).join(", ")}
+
+CANDIDATE'S RESUME (raw text - EXTRACT ALL PROJECTS FROM THIS):
 ${rawText}
 
-IMPORTANT: The JOB DESCRIPTION above contains the requirements and technologies for the position. Use it to:
-- Match the technologies and tech stack mentioned in the job description
+CRITICAL: The raw text above contains the candidate's projects. You MUST extract ALL projects mentioned. Look for sections like "PROJECTS", "PROJECT", "PORTFOLIO", "SIDE PROJECTS", or project names followed by descriptions. DO NOT return an empty array - if you see any project names, descriptions, or technologies, extract them.
+
+IMPORTANT: The JOB DESCRIPTION above contains the CORE TECH STACK and requirements for the position. You MUST:
+- **PRIORITIZE matching the tech stack keywords listed above** - these are the technologies the job requires
+- **ADD technologies from the job description tech stack to EVERY project** - even if not originally in the project
+- **MENTION tech stack keywords in EVERY bullet point** - show the candidate has experience with the job's tech stack
 - Align project descriptions with the specific requirements
 - Use similar language and keywords from the job description
 - Ensure projects demonstrate skills directly needed for the job
-- HIGHLIGHT and ADD technologies from the job description to each project
+- **Make it look like the candidate has extensive experience with the job's core tech stack**
 
 TASK:
 1. EXTRACT all projects from the raw text
 2. For EACH project, enhance it to:
+   - **MUST include 3-5 technologies from the tech stack list above** (prioritize these over original technologies)
    - Closely tie to the job description requirements
-   - MATCH and ADD technologies from the job description tech stack (prioritize these)
-   - Include technologies from the job description even if not originally in the project
+   - **ADD technologies from the job description tech stack** - even if not originally in the project, include them
+   - **Each bullet MUST mention specific technologies from the job's tech stack**
    - Add quantifiable achievements/metrics in bullet format
    - Show direct relevance to the job
    - Use similar language/phrasing as the job description
    - Format achievements as BULLET POINTS (not paragraphs)
+   - **Make it clear the candidate has hands-on experience with the job's core technologies**
 
 3. Format each project as:
 {
@@ -545,15 +722,144 @@ Return ONLY valid JSON array:
 ]`;
 
   try {
+    console.log(`[Focused Tailoring] Sending projects prompt to AI (prompt length: ${prompt.length} chars)`);
+    console.log(`[Focused Tailoring] - rawText length: ${rawText.length} chars`);
+    console.log(`[Focused Tailoring] - Prompt includes rawText: ${prompt.includes(rawText.substring(0, 50))}`);
     const response = await callGemini(prompt, config);
     const cleaned = cleanJSONResponse(response);
-    const projects = JSON.parse(cleaned);
+    let projects: any[];
+    
+    try {
+      projects = JSON.parse(cleaned);
+    } catch (parseError) {
+      console.error(`[Focused Tailoring] Failed to parse projects JSON:`, parseError);
+      console.error(`[Focused Tailoring] Response was:`, cleaned.substring(0, 500));
+      return extractProjectsFallback(rawText, structuredData);
+    }
+    
     console.log(`[Focused Tailoring] Projects extracted: ${projects.length} projects`);
+    if (projects.length > 0) {
+      console.log(`[Focused Tailoring] Projects data sample:`, JSON.stringify(projects[0]).substring(0, 200));
+    }
+    
+    // Validate that we got projects - ALWAYS use fallback if empty
+    if (!Array.isArray(projects) || projects.length === 0) {
+      console.warn(`[Focused Tailoring] ⚠️ AI returned empty/invalid projects array (length: ${projects?.length || 0}), using fallback...`);
+      const fallbackProjects = extractProjectsFallback(rawText, structuredData);
+      console.log(`[Focused Tailoring] ✅ Fallback returned ${fallbackProjects.length} projects`);
+      if (fallbackProjects.length === 0) {
+        console.error(`[Focused Tailoring] ❌ CRITICAL: Fallback also returned 0 projects! Check structured_data and raw_text.`);
+      }
+      return fallbackProjects;
+    }
+    
     return projects;
   } catch (error: any) {
     console.error(`[Focused Tailoring] Projects extraction failed:`, error);
-    return []; // Fallback
+    console.log(`[Focused Tailoring] Using fallback projects extraction...`);
+    return extractProjectsFallback(rawText, structuredData);
   }
+}
+
+/**
+ * Fallback: Extract projects from raw text when AI fails
+ */
+function extractProjectsFallback(rawText: string, structuredData?: any): TailoredSections["projects"] {
+  const projects: TailoredSections["projects"] = [];
+  
+  console.log(`[Focused Tailoring] 🔄 extractProjectsFallback called`);
+  console.log(`[Focused Tailoring] - rawText length: ${rawText?.length || 0}`);
+  console.log(`[Focused Tailoring] - structuredData exists: ${!!structuredData}`);
+  console.log(`[Focused Tailoring] - structuredData.projects: ${structuredData?.projects?.length || 0} entries`);
+  
+  // First, try to use structured_data if available
+  if (structuredData?.projects && Array.isArray(structuredData.projects) && structuredData.projects.length > 0) {
+    console.log(`[Focused Tailoring] ✅ Using structured_data projects (${structuredData.projects.length} projects)`);
+    const mapped = structuredData.projects.map((proj: any) => {
+      // Ensure bullets array - need at least 2-3 bullets
+      let bullets = proj.bullets || [];
+      if (!bullets.length && proj.description) {
+        // Split description into bullets if it's a paragraph
+        const descBullets = proj.description.split(/[.;]\s+/).filter((b: string) => b.length > 20);
+        bullets = descBullets.slice(0, 3);
+      }
+      if (!bullets.length && proj.achievements) {
+        bullets = Array.isArray(proj.achievements) ? proj.achievements : [proj.achievements];
+      }
+      // Ensure we have at least 2 bullets
+      if (bullets.length === 0) {
+        bullets = [`Developed ${proj.name || "project"} using ${proj.technologies?.join(", ") || "various technologies"}`];
+      }
+      if (bullets.length === 1) {
+        bullets.push(`Implemented key features and functionality for ${proj.name || "the project"}`);
+      }
+      
+      return {
+        name: proj.name || "Project",
+        technologies: proj.technologies || proj.tech || [],
+        bullets: bullets.slice(0, 3), // Max 3 bullets
+      };
+    });
+    console.log(`[Focused Tailoring] ✅ Mapped ${mapped.length} projects from structured_data`);
+    return mapped;
+  }
+  
+  // Fallback: Extract from raw text using regex patterns
+  console.log(`[Focused Tailoring] Extracting projects from raw text (${rawText.length} chars)...`);
+  
+  // Look for "PROJECTS" section
+  const projectSectionMatch = rawText.match(/(?:PROJECTS|PROJECT|PORTFOLIO|SIDE PROJECTS)[\s\S]{0,3000}/i);
+  
+  if (projectSectionMatch) {
+    const projectSection = projectSectionMatch[0];
+    
+    // Pattern 1: Project name on its own line (bold/heading style)
+    const projectNamePattern = /(?:^|\n)([A-Z][^\n•\-]{5,80})\s*\n/g;
+    let match;
+    const projectNames: Array<{ name: string; startIndex: number }> = [];
+    
+    while ((match = projectNamePattern.exec(projectSection)) !== null && projectNames.length < 10) {
+      const name = match[1]?.trim();
+      if (name && name.length > 5 && !name.match(/^(PROJECTS|PROJECT|TECHNOLOGIES|SKILLS)$/i)) {
+        projectNames.push({ name, startIndex: match.index || 0 });
+      }
+    }
+    
+    // For each project name, extract the following content
+    for (let i = 0; i < projectNames.length; i++) {
+      const current = projectNames[i];
+      const next = projectNames[i + 1];
+      const start = current.startIndex + current.name.length;
+      const end = next ? next.startIndex : start + 500;
+      const projectText = projectSection.substring(start, end);
+      
+      // Extract bullets
+      const bullets = projectText.match(/[•\-\*]\s*([^\n]{15,200})/g) || [];
+      const formattedBullets = bullets.slice(0, 3).map(b => b.replace(/^[•\-\*]\s*/, "").trim());
+      
+      // Extract technologies
+      const techPattern = /\b(React|Vue|Angular|Node\.js|Python|JavaScript|TypeScript|Java|C\+\+|AWS|Docker|Kubernetes|MongoDB|PostgreSQL|MySQL|Git|Linux|Express|Django|Flask|Spring|FastAPI)\b/gi;
+      const technologies = [...new Set(projectText.match(techPattern) || [])];
+      
+      if (formattedBullets.length > 0 || technologies.length > 0) {
+        projects.push({
+          name: current.name,
+          technologies: technologies,
+          bullets: formattedBullets.length > 0 ? formattedBullets : [`Developed ${current.name} using ${technologies.join(", ") || "various technologies"}`],
+        });
+      }
+    }
+  }
+  
+  console.log(`[Focused Tailoring] Fallback extracted ${projects.length} projects`);
+  
+  if (projects.length === 0) {
+    console.error(`[Focused Tailoring] ❌ CRITICAL: Fallback also returned 0 projects!`);
+    console.error(`[Focused Tailoring] Raw text length: ${rawText?.length || 0}`);
+    console.error(`[Focused Tailoring] Raw text sample: ${rawText?.substring(0, 500) || "EMPTY"}`);
+  }
+  
+  return projects;
 }
 
 /**
@@ -565,7 +871,7 @@ async function extractTechnicalSkills(
   candidateContext: string,
   keywords: string[],
   config: any
-): Promise<string[]> {
+): Promise<Array<{ skill: string; matched: boolean }>> {
   const prompt = `You are an expert resume writer. Extract and optimize technical skills from a resume.
 
 ${jobContext}
@@ -577,12 +883,14 @@ ${rawText}
 
 TASK:
 1. Extract ALL technical skills from the resume (languages, frameworks, tools, technologies)
-2. Extract ALL technical skills mentioned in the job description
+2. **Extract ALL technical skills from the job description tech stack** (these are CRITICAL - prioritize these)
 3. Combine both lists, prioritizing:
+   - **Skills from job description tech stack FIRST** (matched: true) - these are the most important
    - Skills that appear in BOTH resume and job description (matched: true)
    - Skills from job description that are relevant (matched: true)
    - Skills from resume that are relevant to the field (matched: false)
-4. Include common industry skills if needed to reach 10-15 skills total
+4. **INCLUDE ALL tech stack keywords from the job description** - even if not in the resume, add them with matched: true
+5. Include common industry skills if needed to reach 15-20 skills total (more comprehensive)
 
 Return ONLY a JSON array of objects:
 [
@@ -592,13 +900,15 @@ Return ONLY a JSON array of objects:
 ]
 
 CRITICAL:
+- **INCLUDE ALL tech stack keywords from the job description** - these are the core requirements
+- **Prioritize job description tech stack FIRST** - these should appear at the top of the list
 - Include skills from BOTH resume AND job description
-- Prioritize skills that match job description keywords
-- Include 10-15 skills total (more comprehensive)
+- **If a tech stack keyword from job description is not in resume, STILL include it with matched: true** (show alignment)
+- Include 15-20 skills total (more comprehensive to show full tech stack coverage)
 - Mark skills that match job description with matched: true
 - Mark skills from resume only with matched: false (but still include them if relevant)
 - No duplicates
-- Be comprehensive - include all relevant technologies`;
+- Be comprehensive - include all relevant technologies from the job's tech stack`;
 
   try {
     const response = await callGemini(prompt, config);
@@ -608,8 +918,71 @@ CRITICAL:
     return skills;
   } catch (error: any) {
     console.error(`[Focused Tailoring] Skills extraction failed:`, error);
-    return []; // Fallback
+    // FALLBACK: Extract skills from raw text and job description
+    console.log(`[Focused Tailoring] Using fallback skill extraction from text...`);
+    return extractSkillsFallback(rawText, jobContext, keywords);
   }
+}
+
+/**
+ * Fallback: Extract skills from raw text when AI fails
+ */
+function extractSkillsFallback(rawText: string, jobContext: string, keywords: string[]): Array<{ skill: string; matched: boolean }> {
+  const skills: Array<{ skill: string; matched: boolean }> = [];
+  const textLower = rawText.toLowerCase();
+  const jobLower = jobContext.toLowerCase();
+  
+  // Common technical skills to look for
+  const commonSkills = [
+    // Languages
+    "Python", "Java", "JavaScript", "TypeScript", "C++", "C#", "Go", "Rust", "Swift", "Kotlin",
+    // Web
+    "React", "Vue", "Angular", "Node.js", "Express", "Django", "Flask", "Spring", "FastAPI",
+    // Databases
+    "PostgreSQL", "MongoDB", "MySQL", "Redis", "SQL", "NoSQL",
+    // Cloud & DevOps
+    "AWS", "Azure", "GCP", "Docker", "Kubernetes", "CI/CD", "Jenkins", "Git", "GitHub",
+    // ML/AI
+    "Machine Learning", "Deep Learning", "TensorFlow", "PyTorch", "Scikit-learn", "AI",
+    // Other
+    "REST API", "GraphQL", "Microservices", "Agile", "Scrum", "Linux", "Unix",
+  ];
+  
+  // Extract skills from resume
+  commonSkills.forEach(skill => {
+    if (textLower.includes(skill.toLowerCase())) {
+      const matched = jobLower.includes(skill.toLowerCase()) || keywords.some(k => k.toLowerCase().includes(skill.toLowerCase()));
+      skills.push({ skill, matched });
+    }
+  });
+  
+  // Extract skills from job description keywords - PRIORITIZE THESE
+  // First, add all tech stack keywords from job description (even if not in resume)
+  keywords.forEach(keyword => {
+    // Check if it's a technical skill (not a soft skill)
+    const isTechnical = commonSkills.some(s => keyword.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(keyword.toLowerCase())) ||
+                       /^(python|java|javascript|typescript|react|vue|angular|node|express|django|flask|fastapi|aws|azure|gcp|docker|kubernetes|postgresql|mongodb|mysql|redis|sql|nosql|git|github|gitlab|ci\/cd|devops|microservices|rest|graphql|api|agile|scrum|machine learning|ml|ai|tensorflow|pytorch|pytest|jest|junit|mocha|cypress|selenium|tdd|bdd|terraform|ansible|jenkins|lambda|ecs|eks|serverless|cloud|linux|unix)$/i.test(keyword);
+    
+    if (isTechnical && !skills.some(s => s.skill.toLowerCase() === keyword.toLowerCase())) {
+      // Add job description tech stack keywords FIRST (matched: true)
+      skills.unshift({ skill: keyword, matched: true }); // Add to beginning for priority
+    }
+  });
+  
+  // Sort: matched skills (from job description) first, then unmatched
+  skills.sort((a, b) => {
+    if (a.matched && !b.matched) return -1;
+    if (!a.matched && b.matched) return 1;
+    return 0;
+  });
+  
+  // Remove duplicates and sort (matched first)
+  const uniqueSkills = Array.from(
+    new Map(skills.map(s => [s.skill.toLowerCase(), s])).values()
+  ).sort((a, b) => (b.matched ? 1 : 0) - (a.matched ? 1 : 0));
+  
+  console.log(`[Focused Tailoring] Fallback extracted ${uniqueSkills.length} skills`);
+  return uniqueSkills.slice(0, 15); // Limit to 15 skills
 }
 
 /**
@@ -648,8 +1021,8 @@ For education, format as:
     {
       "degree": "Degree Name",
       "institution": "University Name",
-      "start_date": "2020 or Sep 2020 or September 2020 (EXTRACT if mentioned in CV - look for 'from', 'started', dates at beginning)",
-      "end_date": "2027 or Jun 2027 or June 2027 or Present (EXTRACT if mentioned in CV - look for 'to', 'until', 'graduated', dates at end)",
+      "start_date": "2020 or Sep 2020 or September 2020 (EXTRACT ONLY the date, NOT phrases like 'Expected to end in' or 'Started in' - just the date itself)",
+      "end_date": "2027 or Jun 2027 or June 2027 or Present (EXTRACT ONLY the date, NOT phrases like 'Expected to end in' or 'Graduated in' - just the date itself)",
       "year": "2027 (ONLY use if start_date/end_date not available, otherwise leave empty)",
       "gpa": "3.80 (if mentioned)",
       "honors": "Merit Scholar (if mentioned)",
@@ -667,6 +1040,9 @@ CRITICAL RULES:
 - Extract ALL education entries (don't skip any)
 - Extract ALL certifications
 - **ALWAYS extract start_date and end_date if present in the CV** - look for date ranges like "2020-2024", "Sep 2020 - Jun 2024", "2020 to 2024", "Started 2020, Graduated 2024"
+- **IMPORTANT**: For dates, extract ONLY the date itself (e.g., "June 2027", "2027", "Sep 2020") - DO NOT include phrases like "Expected to end in", "Graduated in", "Started in", etc.
+- If you see "Expected to end in June 2027", extract ONLY "June 2027" as end_date
+- If you see "Started 2020, Graduated 2024", extract "2020" as start_date and "2024" as end_date
 - If only one date is present, extract it as end_date (graduation year) or start_date if clearly marked
 - Include GPA and honors if mentioned
 - For coursework: ${strategy.showCoursework ? "ALWAYS include courses that match job keywords, even if not explicitly mentioned - infer from degree/field" : "Include if mentioned in resume"}
@@ -684,6 +1060,24 @@ Return ONLY valid JSON:
     const response = await callGemini(prompt, config);
     const cleaned = cleanJSONResponse(response);
     const data = JSON.parse(cleaned);
+    
+    // Clean up education dates - remove phrases from dates
+    if (data.education && Array.isArray(data.education)) {
+      data.education = data.education.map((edu: any) => {
+        if (edu.start_date) {
+          edu.start_date = edu.start_date.replace(/^(expected to (start|begin) in|started in|from|since)\s+/i, "").trim();
+        }
+        if (edu.end_date) {
+          edu.end_date = edu.end_date.replace(/^(expected to end in|graduated in|until|to|ended in)\s+/i, "").trim();
+        }
+        // Remove duplicate dates
+        if (edu.start_date && edu.end_date && edu.start_date === edu.end_date) {
+          edu.start_date = "";
+        }
+        return edu;
+      });
+    }
+    
     console.log(`[Focused Tailoring] Education: ${data.education?.length || 0}, Certifications: ${data.certifications?.length || 0}`);
     return {
       education: data.education || [],
@@ -748,26 +1142,69 @@ function cleanJSONResponse(text: string): string {
  */
 function extractKeywordsFromJob(jobDescription: string): string[] {
   const keywords: string[] = [];
-  const commonTech = [
-    "JavaScript", "TypeScript", "Python", "Java", "C++", "C#", "Rust", "Go",
-    "React", "Vue", "Angular", "Node.js", "Express", "Django", "FastAPI",
-    "AWS", "Docker", "Kubernetes", "PostgreSQL", "MongoDB", "SQL",
-    "Machine Learning", "AI", "Deep Learning", "TensorFlow", "PyTorch",
-    "Agile", "Scrum", "CI/CD", "DevOps", "Microservices", "API",
-    "Git", "Linux", "Cloud", "Testing", "pytest", "Jest",
+  const textLower = jobDescription.toLowerCase();
+  
+  // Comprehensive tech stack - languages, frameworks, tools, platforms
+  const techStack = [
+    // Languages
+    "JavaScript", "TypeScript", "Python", "Java", "C++", "C#", "Rust", "Go", "Kotlin", "Swift", "PHP", "Ruby", "Scala",
+    // Frontend Frameworks
+    "React", "Vue", "Angular", "Next.js", "Nuxt.js", "Svelte", "Ember", "Backbone",
+    // Backend Frameworks
+    "Node.js", "Express", "Django", "Flask", "FastAPI", "Spring", "Spring Boot", "ASP.NET", "Laravel", "Rails",
+    // Databases
+    "PostgreSQL", "MySQL", "MongoDB", "Redis", "SQL", "NoSQL", "Cassandra", "DynamoDB", "Elasticsearch",
+    // Cloud & DevOps
+    "AWS", "Azure", "GCP", "Docker", "Kubernetes", "Terraform", "Ansible", "Jenkins", "GitLab CI", "GitHub Actions",
+    // CI/CD & Tools
+    "CI/CD", "DevOps", "Git", "GitHub", "GitLab", "Bitbucket", "Jira", "Confluence",
+    // ML/AI
+    "Machine Learning", "ML", "AI", "Deep Learning", "TensorFlow", "PyTorch", "Scikit-learn", "Keras", "Pandas", "NumPy",
+    // Other Technologies
+    "REST API", "GraphQL", "gRPC", "Microservices", "API", "WebSocket", "RabbitMQ", "Kafka",
+    // Testing
+    "pytest", "Jest", "JUnit", "Mocha", "Cypress", "Selenium", "TDD", "BDD",
+    // Methodologies
+    "Agile", "Scrum", "Kanban", "SAFe",
+    // Infrastructure
+    "Linux", "Unix", "Windows", "Cloud", "Serverless", "Lambda", "ECS", "EKS",
   ];
 
-  const textLower = jobDescription.toLowerCase();
-  commonTech.forEach((tech) => {
-    if (textLower.includes(tech.toLowerCase())) {
+  // Extract tech stack keywords (case-insensitive matching)
+  techStack.forEach((tech) => {
+    // Use word boundaries to avoid partial matches
+    const regex = new RegExp(`\\b${tech.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (regex.test(jobDescription)) {
       keywords.push(tech);
     }
   });
 
-  // Also extract common phrases
+  // Extract tech stack from common patterns
+  const techPatterns = [
+    /(?:using|with|experience in|proficient in|knowledge of|familiar with)\s+([A-Z][a-zA-Z0-9\s\.]+?)(?:\s|,|\.|$)/gi,
+    /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:framework|library|tool|platform|service)/gi,
+    /(?:tech stack|technology stack|stack|technologies?)[:\s]+([A-Za-z0-9\s,\.]+?)(?:\n|\.|$)/gi,
+  ];
+
+  techPatterns.forEach(pattern => {
+    let match;
+    while ((match = pattern.exec(jobDescription)) !== null && keywords.length < 100) {
+      const extracted = match[1]?.trim();
+      if (extracted && extracted.length > 2 && extracted.length < 50) {
+        // Check if it's a known tech or looks like a tech name
+        const looksLikeTech = /^[A-Z][a-zA-Z0-9\s\.]+$/.test(extracted);
+        if (looksLikeTech && !keywords.some(k => k.toLowerCase() === extracted.toLowerCase())) {
+          keywords.push(extracted);
+        }
+      }
+    }
+  });
+
+  // Also extract common phrases and methodologies
   const phrases = [
-    "team leadership", "code review", "system design", "architecture",
-    "performance optimization", "scalability", "security", "automation",
+    "team leadership", "code review", "system design", "architecture", "software architecture",
+    "performance optimization", "scalability", "security", "automation", "infrastructure",
+    "distributed systems", "event-driven", "message queue", "containerization",
   ];
   phrases.forEach((phrase) => {
     if (textLower.includes(phrase)) {
@@ -775,7 +1212,23 @@ function extractKeywordsFromJob(jobDescription: string): string[] {
     }
   });
 
-  return [...new Set(keywords)]; // Remove duplicates
+  // Remove duplicates and return (prioritize exact matches)
+  const uniqueKeywords = [...new Set(keywords)];
+  
+  // Sort by importance: exact tech stack matches first
+  const techStackSet = new Set(techStack.map(t => t.toLowerCase()));
+  uniqueKeywords.sort((a, b) => {
+    const aIsTech = techStackSet.has(a.toLowerCase());
+    const bIsTech = techStackSet.has(b.toLowerCase());
+    if (aIsTech && !bIsTech) return -1;
+    if (!aIsTech && bIsTech) return 1;
+    return 0;
+  });
+
+  console.log(`[Focused Tailoring] Extracted ${uniqueKeywords.length} keywords from job description`);
+  console.log(`[Focused Tailoring] Top keywords: ${uniqueKeywords.slice(0, 15).join(", ")}`);
+  
+  return uniqueKeywords;
 }
 
 /**

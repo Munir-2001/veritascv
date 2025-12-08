@@ -72,6 +72,25 @@ export async function POST(request: NextRequest) {
         updated_at: new Date().toISOString(),
       };
 
+      // Preserve subscription-related fields if they exist (don't overwrite premium status)
+      if (profileData) {
+        if (profileData.subscription_tier) {
+          updateData.subscription_tier = profileData.subscription_tier;
+        }
+        if (profileData.cv_generations_remaining !== undefined) {
+          updateData.cv_generations_remaining = profileData.cv_generations_remaining;
+        }
+        if (profileData.unlimited_access !== undefined) {
+          updateData.unlimited_access = profileData.unlimited_access;
+        }
+        if (profileData.subscription_id) {
+          updateData.subscription_id = profileData.subscription_id;
+        }
+        if (profileData.user_status) {
+          updateData.user_status = profileData.user_status;
+        }
+      }
+
       // Only add these fields if creating a new profile
       if (!profileData) {
         updateData.onboarding_completed = false;
@@ -84,7 +103,7 @@ export async function POST(request: NextRequest) {
         .upsert(updateData, {
           onConflict: "id",
         })
-        .select()
+        .select("*") // Select all fields including subscription_tier
         .single();
 
       if (updateError) {

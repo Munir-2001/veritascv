@@ -13,6 +13,7 @@ import {
 import { getCVStrategy, type JobLevel, enhanceBulletPoint, extractMetrics } from "@/lib/cv/strategy";
 import { prepareCVSections, getSectionLimits } from "@/lib/cv/renderer";
 import { getCVStyle, getToneInstructions, getATSSectionTitle, type CVTemplate } from "@/lib/cv/styles";
+import { checkDailyQuota } from "@/lib/stripe/daily-quota";
 
 /**
  * API Route: POST /api/cv/generate
@@ -35,9 +36,28 @@ export async function POST(request: NextRequest) {
       domain = "general",
       job_description, // For keyword extraction
       cv_name, // Custom name to appear on CV
+      user_id, // User ID for quota checking
     } = body;
 
     console.log("[CV Generation] ==================== NEW REQUEST ====================");
+
+    // Check daily quota if user_id is provided
+    if (user_id) {
+      const quotaCheck = await checkDailyQuota(user_id);
+      if (!quotaCheck.allowed) {
+        return NextResponse.json(
+          {
+            error: "Daily CV generation limit reached",
+            message: quotaCheck.message,
+            remaining: quotaCheck.remaining,
+            dailyLimit: quotaCheck.dailyLimit,
+            resetTime: quotaCheck.resetTime?.toISOString(),
+          },
+          { status: 429 } // Too Many Requests
+        );
+      }
+      console.log(`[CV Generation] Quota check: ${quotaCheck.remaining}/${quotaCheck.dailyLimit} remaining`);
+    }
     console.log("[CV Generation] Inputs:", {
       resume_id,
       job_title,
@@ -372,13 +392,9 @@ async function generatePDF(
 
   const margin = cvStyle.layout.margin;
   const contentWidth = cvStyle.layout.contentWidth;
-  // Start closer to top for better page utilization (A4 is 842pt tall)
-  let yPosition = 820; // Start higher up
+  // Start at the very top for maximum space (A4 is 842pt tall, margins reduce usable space)
+  let yPosition = 820; // Start very high up
   const lineHeight = cvStyle.spacing.lineHeight;
-  const sectionSpacing = cvStyle.spacing.sectionBottom;
-  
-  // Optimize spacing for better page utilization
-  const optimizedSectionSpacing = Math.max(sectionSpacing - 3, 10); // Reduce spacing slightly
 
   // Helper to sanitize text for PDF encoding (WinAnsi)
   const sanitizeText = (text: string): string => {
@@ -452,7 +468,7 @@ async function generatePDF(
     const lineSpacing = size * cvStyle.spacing.lineHeight;
 
     for (const line of lines) {
-      if (currentY < 50) {
+      if (currentY < 60) {
         // Need new page
         page = pdfDoc.addPage([595, 842]);
         currentY = 800;
@@ -489,21 +505,27 @@ async function generatePDF(
     // Use ATS-friendly section title if template is ATS-friendly
     const displayTitle = getATSSectionTitle(title, template as CVTemplate);
     
+    // Reduced spacing before section header (was sectionTop, now just 4pt to avoid double spacing)
+    y -= 4; // Minimal space before header
     addText(displayTitle, margin, y, headerSize, true, headerColor);
     
     // Apply header style (skip underlines/borders for ATS-friendly)
     if (template === "ats-friendly") {
       // ATS-friendly: simple bold only, no underlines or borders
+      return y - (headerSize * lineHeight) - 4; // Reduced spacing after header
     } else if (cvStyle.layout.headerStyle === "underline" || cvStyle.layout.headerStyle === "bold-underline") {
+      // Draw underline (longer, spans more of content width for better appearance)
+      const textWidth = boldFont.widthOfTextAtSize(displayTitle, headerSize);
       page.drawLine({
-        start: { x: margin, y: y - 8 },
-        end: { x: margin + 100, y: y - 8 },
-        thickness: 2,
+        start: { x: margin, y: y - 5 },
+        end: { x: margin + Math.min(textWidth + 30, contentWidth * 0.6), y: y - 5 },
+        thickness: 1.5,
         color: headerColor,
       });
+      return y - (headerSize * lineHeight) - 4; // Reduced spacing after header
     } else if (cvStyle.layout.headerStyle === "border") {
       // Draw a border box around header (for creative style)
-      const textWidth = displayTitle.length * headerSize * 0.6;
+      const textWidth = boldFont.widthOfTextAtSize(displayTitle, headerSize);
       page.drawRectangle({
         x: margin - 5,
         y: y - headerSize - 5,
@@ -512,11 +534,10 @@ async function generatePDF(
         borderColor: headerColor,
         borderWidth: 1,
       });
+      return y - (headerSize * lineHeight) - 4; // Reduced spacing after header
     }
     
-    // Reduce top spacing slightly for better page utilization
-    const optimizedTopSpacing = Math.max(cvStyle.spacing.sectionTop - 3, 12);
-    return y - (headerSize + optimizedTopSpacing);
+    return y - (headerSize * lineHeight) - 4; // Reduced spacing after header
   };
   
   // Helper to get bullet character based on style
@@ -545,10 +566,10 @@ async function generatePDF(
 
   // Render sections dynamically based on strategy
   for (const section of sections) {
-    // Check if we need a new page (lower threshold for better utilization)
+    // Check if we need a new page (allow multiple pages if needed)
     if (yPosition < 80 && section.type !== "contact") {
       page = pdfDoc.addPage([595, 842]);
-      yPosition = 820;
+      yPosition = 800;
     }
 
     // Render section based on type
@@ -557,7 +578,7 @@ async function generatePDF(
         // Header Section
         const name = contactInfo.name || "Your Name";
         yPosition = addText(name, margin, yPosition, cvStyle.fontSize.name, true, cvStyle.colors.heading);
-        yPosition -= 8;
+        yPosition -= 4; // Reduced spacing after name
 
         // Contact info
         const contactParts: string[] = [];
@@ -569,36 +590,42 @@ async function generatePDF(
           const contactText = contactParts.join(" • ");
           yPosition = addText(contactText, margin, yPosition, cvStyle.fontSize.contact, false, cvStyle.colors.secondary, contentWidth);
         }
-        yPosition -= optimizedSectionSpacing;
+        yPosition -= 4; // Minimal spacing after contact (no double spacing)
         break;
 
       case "about_me":
         yPosition = addSectionHeader(section.title, yPosition);
         const aboutMeLines = section.content.split("\n").filter((l: string) => l.trim());
-        for (const line of aboutMeLines.slice(0, 8)) {
-          if (yPosition < 100) break;
+        for (const line of aboutMeLines) {
+          if (yPosition < 70) {
+            page = pdfDoc.addPage([595, 842]);
+            yPosition = 800;
+          }
           yPosition = addText(line.trim(), margin, yPosition, cvStyle.fontSize.body, false, cvStyle.colors.text, contentWidth);
         }
-        yPosition -= optimizedSectionSpacing;
+        yPosition -= 2; // Minimal spacing after section (no double spacing)
         break;
 
       case "summary":
         yPosition = addSectionHeader(section.title, yPosition);
         const summaryLines = section.content.split("\n").filter((l: string) => l.trim());
-        for (const line of summaryLines.slice(0, 6)) {
-          if (yPosition < 100) break;
+        for (const line of summaryLines) {
+          if (yPosition < 70) {
+            page = pdfDoc.addPage([595, 842]);
+            yPosition = 800;
+          }
           yPosition = addText(line.trim(), margin, yPosition, cvStyle.fontSize.body, false, cvStyle.colors.text, contentWidth);
         }
-        yPosition -= optimizedSectionSpacing;
+        yPosition -= 2; // Minimal spacing after section (no double spacing)
         break;
 
       case "experience":
         yPosition = addSectionHeader(section.title, yPosition);
         const expLimit = getSectionLimits(section.importance, "experience");
         for (const exp of section.content.slice(0, expLimit)) {
-          if (yPosition < 80) {
+          if (yPosition < 70) {
             page = pdfDoc.addPage([595, 842]);
-            yPosition = 820;
+            yPosition = 800;
           }
 
           const title = exp.title || exp.job_title || "Position";
@@ -606,27 +633,39 @@ async function generatePDF(
           const duration = exp.duration || "";
 
           yPosition = addText(`${title}`, margin, yPosition, cvStyle.fontSize.jobTitle, true, cvStyle.colors.heading);
-          yPosition = addText(`${company}${duration ? ` • ${duration}` : ""}`, margin + 5, yPosition, cvStyle.fontSize.body, false, cvStyle.colors.secondary);
-          yPosition -= 4;
+          yPosition = addText(`${company}${duration ? ` • ${duration}` : ""}`, margin, yPosition, cvStyle.fontSize.contact, false, cvStyle.colors.secondary);
+          yPosition -= 3; // Reduced space before bullets
 
-          // Use bullets array if available (limit to 2), otherwise fallback to description
+          // Use bullets array if available, otherwise fallback to description
           const bullets = exp.bullets || [];
           if (bullets.length > 0) {
-            // Limit to exactly 2 bullets per job
-            for (const bullet of bullets.slice(0, 2)) {
-              if (yPosition < 100) break;
-              yPosition = addText(`• ${bullet.trim()}`, margin + 10, yPosition, 10, false, rgb(0, 0, 0), contentWidth - 20);
+            // Include all bullets from the resume + job description edits
+            for (const bullet of bullets) {
+              if (yPosition < 70) {
+                page = pdfDoc.addPage([595, 842]);
+                yPosition = 800;
+              }
+              const bulletChar = getBulletChar();
+              const bulletText = bulletChar ? `${bulletChar} ${bullet.trim()}` : `• ${bullet.trim()}`;
+              yPosition = addText(bulletText, margin + cvStyle.spacing.bulletIndent, yPosition, cvStyle.fontSize.bullet, false, cvStyle.colors.text, contentWidth - cvStyle.spacing.bulletIndent);
+              yPosition -= 4; // Better spacing between bullets
             }
           } else if (exp.description) {
             const descLines = exp.description.split("\n").filter((l: string) => l.trim());
-            for (const line of descLines.slice(0, 2)) {
-              if (yPosition < 100) break;
-              yPosition = addText(`• ${line.trim()}`, margin + 10, yPosition, 10, false, rgb(0, 0, 0), contentWidth - 20);
+            for (const line of descLines) {
+              if (yPosition < 70) {
+                page = pdfDoc.addPage([595, 842]);
+                yPosition = 800;
+              }
+              const bulletChar = getBulletChar();
+              const bulletText = bulletChar ? `${bulletChar} ${line.trim()}` : `• ${line.trim()}`;
+              yPosition = addText(bulletText, margin + cvStyle.spacing.bulletIndent, yPosition, cvStyle.fontSize.bullet, false, cvStyle.colors.text, contentWidth - cvStyle.spacing.bulletIndent);
+              yPosition -= 4; // Better spacing between bullets
             }
           }
-          yPosition -= 8;
+          yPosition -= 4; // Reduced spacing between jobs
         }
-        yPosition -= optimizedSectionSpacing;
+        yPosition -= 2; // Minimal spacing after section (no double spacing)
         break;
 
       case "skills":
@@ -650,8 +689,13 @@ async function generatePDF(
           skillsText = skillsArray.join(" • ");
         }
         
+        if (yPosition < 70) {
+          page = pdfDoc.addPage([595, 842]);
+          yPosition = 800;
+        }
+        
         yPosition = addText(skillsText, margin, yPosition, cvStyle.fontSize.body, false, cvStyle.colors.text, contentWidth);
-        yPosition -= optimizedSectionSpacing;
+        yPosition -= 2; // Minimal spacing after section (no double spacing)
         break;
 
       case "education":
@@ -660,16 +704,26 @@ async function generatePDF(
         for (const edu of section.content.slice(0, eduLimit)) {
           if (yPosition < 80) {
             page = pdfDoc.addPage([595, 842]);
-            yPosition = 820;
+            yPosition = 800;
           }
 
           const degree = edu.degree || edu.degree_name || "Degree";
           const institution = edu.institution || edu.school || "Institution";
-          const startDate = edu.start_date || "";
-          const endDate = edu.end_date || "";
+          let startDate = edu.start_date || "";
+          let endDate = edu.end_date || "";
           const year = edu.year || edu.graduation_year || "";
           const gpa = edu.gpa || "";
           const honors = edu.honors || "";
+
+          // Clean up dates - remove phrases like "Expected to end in", "Graduated in", etc.
+          startDate = startDate.replace(/^(expected to (start|begin) in|started in|from|since)\s+/i, "").trim();
+          endDate = endDate.replace(/^(expected to end in|graduated in|until|to|ended in)\s+/i, "").trim();
+          
+          // Remove duplicate dates (if endDate contains the same as startDate)
+          if (startDate && endDate && startDate === endDate) {
+            // If both are the same, use only endDate
+            startDate = "";
+          }
 
           yPosition = addText(`${degree}`, margin, yPosition, cvStyle.fontSize.jobTitle, true, cvStyle.colors.heading);
           let eduInfo = institution;
@@ -689,26 +743,17 @@ async function generatePDF(
           yPosition = addText(eduInfo, margin + 5, yPosition, cvStyle.fontSize.body, false, cvStyle.colors.text);
           yPosition -= 4;
 
-          // Coursework
+          // Coursework - simple bullet point only
           if (edu.coursework && edu.coursework.length > 0) {
-            const courseworkText = `Relevant Coursework: ${edu.coursework.slice(0, 6).join(", ")}`;
-            yPosition = addText(courseworkText, margin + 10, yPosition, 9, false, rgb(0, 0, 0), contentWidth - 20);
+            const bulletChar = getBulletChar();
+            const courseworkText = `${bulletChar ? bulletChar + " " : ""}Relevant Coursework: ${edu.coursework.slice(0, 6).join(", ")}`;
+            yPosition = addText(courseworkText, margin + cvStyle.spacing.bulletIndent, yPosition, cvStyle.fontSize.contact, false, cvStyle.colors.text, contentWidth - cvStyle.spacing.bulletIndent);
             yPosition -= 4;
           }
 
-          // Achievements
-          if (edu.achievements && edu.achievements.length > 0) {
-            for (const achievement of edu.achievements.slice(0, 3)) {
-              const bulletChar = getBulletChar();
-              const bulletText = bulletChar ? `${bulletChar} ${achievement}` : achievement;
-              yPosition = addText(bulletText, margin + cvStyle.spacing.bulletIndent, yPosition, cvStyle.fontSize.contact, false, cvStyle.colors.text, contentWidth - cvStyle.spacing.bulletIndent);
-              yPosition -= 4;
-            }
-          }
-
-          yPosition -= 4;
+          yPosition -= 2; // Reduced spacing between education entries
         }
-        yPosition -= optimizedSectionSpacing;
+        yPosition -= 2; // Minimal spacing after section (no double spacing)
         break;
 
       case "projects":
@@ -717,7 +762,7 @@ async function generatePDF(
         for (const project of section.content.slice(0, projLimit)) {
           if (yPosition < 80) {
             page = pdfDoc.addPage([595, 842]);
-            yPosition = 820;
+            yPosition = 800;
           }
           const projName = project.name || "Project";
           yPosition = addText(projName, margin, yPosition, cvStyle.fontSize.jobTitle, true, cvStyle.colors.heading);
@@ -731,9 +776,18 @@ async function generatePDF(
               yPosition -= 4;
             }
           } else if (project.description) {
-            // Fallback to description if bullets not available
-            yPosition = addText(project.description, margin + 5, yPosition, 10, false, rgb(0, 0, 0), contentWidth - 20);
-            yPosition -= 4;
+            // Fallback: split description into paragraphs or bullets
+            const descLines = project.description.split(/[.;]\s+/).filter((l: string) => l.trim().length > 20);
+            for (const line of descLines) {
+              if (yPosition < 70) {
+                page = pdfDoc.addPage([595, 842]);
+                yPosition = 800;
+              }
+              const bulletChar = getBulletChar();
+              const bulletText = bulletChar ? `${bulletChar} ${line.trim()}` : `• ${line.trim()}`;
+              yPosition = addText(bulletText, margin + cvStyle.spacing.bulletIndent, yPosition, cvStyle.fontSize.bullet, false, cvStyle.colors.text, contentWidth - cvStyle.spacing.bulletIndent);
+              yPosition -= 4;
+            }
           }
           
           if (project.technologies && project.technologies.length > 0) {
@@ -741,29 +795,32 @@ async function generatePDF(
             yPosition = addText(`Technologies: ${techText}`, margin + cvStyle.spacing.bulletIndent, yPosition, cvStyle.fontSize.contact, false, cvStyle.colors.secondary, contentWidth - cvStyle.spacing.bulletIndent);
             yPosition -= 4;
           }
-          yPosition -= 8;
+          yPosition -= 4; // Reduced spacing between projects
         }
-        yPosition -= optimizedSectionSpacing;
+        yPosition -= 2; // Minimal spacing after section (no double spacing)
         break;
 
       case "certifications":
         yPosition = addSectionHeader(section.title, yPosition);
         const certLimit = getSectionLimits(section.importance, "certifications");
         for (const cert of section.content.slice(0, certLimit)) {
-          if (yPosition < 100) break;
+          if (yPosition < 70) {
+            page = pdfDoc.addPage([595, 842]);
+            yPosition = 800;
+          }
           const certName = cert.name || "Certification";
           const issuer = cert.issuer || "";
           const year = cert.year || "";
           yPosition = addText(`${certName}${issuer ? ` • ${issuer}` : ""}${year ? ` • ${year}` : ""}`, margin, yPosition, cvStyle.fontSize.body, false, cvStyle.colors.text);
-          yPosition -= 6;
+          yPosition -= 4; // Reduced spacing between certs
         }
-        yPosition -= optimizedSectionSpacing;
+        yPosition -= 2; // Minimal spacing after section (no double spacing)
         break;
 
       case "achievements":
         yPosition = addSectionHeader(section.title, yPosition);
-        for (const achievement of section.content.slice(0, 5)) {
-          if (yPosition < 100) {
+        for (const achievement of section.content) {
+          if (yPosition < 70) {
             page = pdfDoc.addPage([595, 842]);
             yPosition = 800;
           }
@@ -771,9 +828,9 @@ async function generatePDF(
           const bulletChar = getBulletChar();
           const bulletText = bulletChar ? `${bulletChar} ${achievementText}` : achievementText;
           yPosition = addText(bulletText, margin, yPosition, cvStyle.fontSize.bullet, false, cvStyle.colors.text, contentWidth);
-          yPosition -= 8;
+          yPosition -= 4; // Reduced spacing between achievements
         }
-        yPosition -= optimizedSectionSpacing;
+        yPosition -= 2; // Minimal spacing after section (no double spacing)
         break;
 
       default:
@@ -865,12 +922,13 @@ async function generateDOCX(
               children: [
                 new TextRun({
                   text: contactParts.join(" • "),
-                  size: 20, // 10pt
-                  color: "000000",
+                  size: cvStyle.fontSize.contact * 2, // Convert pt to half-points
+                  font: cvStyle.fonts.docxBody || "Arial",
+                  color: cvStyle.colors.text === rgb(0, 0, 0) ? "000000" : "000000",
                 }),
               ],
               alignment: AlignmentType.CENTER,
-              spacing: { after: 240 },
+              spacing: { after: cvStyle.spacing.sectionTop * 20 }, // Convert to twips
             })
           );
         }
@@ -911,19 +969,7 @@ async function generateDOCX(
         break;
 
       case "experience":
-        children.push(
-          new Paragraph({
-            children: [
-              new TextRun({
-                text: section.title.toUpperCase(),
-                bold: true,
-                size: 24,
-                color: "000000",
-              }),
-            ],
-            spacing: { before: 240, after: 120 },
-          })
-        );
+        children.push(createSectionHeader(section.title));
         const expLimit2 = getSectionLimits(section.importance, "experience");
         for (const exp of section.content.slice(0, expLimit2)) {
           const title2 = exp.title || exp.job_title || "Position";
@@ -936,18 +982,18 @@ async function generateDOCX(
                 new TextRun({
                   text: title2,
                   bold: true,
-                  size: cvStyle.fontSize.jobTitle * 2,
+                  size: cvStyle.fontSize.jobTitle * 2, // Convert pt to half-points
                   font: cvStyle.fonts.docxHeading || "Arial",
                   color: cvStyle.colors.heading === rgb(0, 0, 0) ? "000000" : "000000",
                 }),
                 new TextRun({
                   text: ` - ${company2}${duration2 ? ` • ${duration2}` : ""}`,
-                  size: cvStyle.fontSize.body * 2,
+                  size: cvStyle.fontSize.body * 2, // Convert pt to half-points
                   font: cvStyle.fonts.docxBody || "Arial",
                   color: cvStyle.colors.secondary === rgb(0, 0, 0) ? "000000" : "333333",
                 }),
               ],
-              spacing: { after: cvStyle.spacing.betweenItems * 20 },
+              spacing: { after: cvStyle.spacing.betweenItems * 20 }, // Convert to twips
             })
           );
 
@@ -963,17 +1009,17 @@ async function generateDOCX(
                       text: cvStyle.layout.bulletStyle === "dash" ? "— " : 
                             cvStyle.layout.bulletStyle === "arrow" ? "→ " : "• ", 
                       bold: true,
-                      size: cvStyle.fontSize.bullet * 2,
+                      size: cvStyle.fontSize.bullet * 2, // Convert pt to half-points
                     }),
                     new TextRun({ 
                       text: bullet.trim(),
-                      size: cvStyle.fontSize.bullet * 2,
+                      size: cvStyle.fontSize.bullet * 2, // Convert pt to half-points
                       font: cvStyle.fonts.docxBody || "Arial",
                       color: cvStyle.colors.text === rgb(0, 0, 0) ? "000000" : "000000",
                     }),
                   ],
-                  indent: { left: cvStyle.spacing.bulletIndent * 20 },
-                  spacing: { after: cvStyle.spacing.betweenItems * 20 },
+                  indent: { left: cvStyle.spacing.bulletIndent * 20 }, // Convert to twips
+                  spacing: { after: Math.max(cvStyle.spacing.betweenItems * 20, 80) }, // Convert to twips, min 80
                 })
               );
             }
@@ -983,11 +1029,20 @@ async function generateDOCX(
               children.push(
                 new Paragraph({
                   children: [
-                    new TextRun({ text: "• ", bold: true }),
-                    new TextRun({ text: line.trim() }),
+                    new TextRun({ 
+                      text: cvStyle.layout.bulletStyle === "dash" ? "— " : 
+                            cvStyle.layout.bulletStyle === "arrow" ? "→ " : "• ", 
+                      bold: true,
+                      size: cvStyle.fontSize.bullet * 2,
+                    }),
+                    new TextRun({ 
+                      text: line.trim(),
+                      size: cvStyle.fontSize.bullet * 2,
+                      font: cvStyle.fonts.docxBody || "Arial",
+                    }),
                   ],
-                  indent: { left: 360 },
-                  spacing: { after: 40 },
+                  indent: { left: cvStyle.spacing.bulletIndent * 20 },
+                  spacing: { after: Math.max(cvStyle.spacing.betweenItems * 20, 80) },
                 })
               );
             }
@@ -1044,11 +1099,21 @@ async function generateDOCX(
         for (const edu of section.content.slice(0, eduLimit2)) {
           const degree2 = edu.degree || edu.degree_name || "Degree";
           const institution2 = edu.institution || edu.school || "Institution";
-          const startDate2 = edu.start_date || "";
-          const endDate2 = edu.end_date || "";
+          let startDate2 = edu.start_date || "";
+          let endDate2 = edu.end_date || "";
           const year2 = edu.year || edu.graduation_year || "";
           const gpa2 = edu.gpa || "";
           const honors2 = edu.honors || "";
+
+          // Clean up dates - remove phrases like "Expected to end in", "Graduated in", etc.
+          startDate2 = startDate2.replace(/^(expected to (start|begin) in|started in|from|since)\s+/i, "").trim();
+          endDate2 = endDate2.replace(/^(expected to end in|graduated in|until|to|ended in)\s+/i, "").trim();
+          
+          // Remove duplicate dates (if endDate contains the same as startDate)
+          if (startDate2 && endDate2 && startDate2 === endDate2) {
+            // If both are the same, use only endDate
+            startDate2 = "";
+          }
 
           let eduInfo2 = institution2;
           // Show start/end dates if available (prefer dates over year)
@@ -1071,70 +1136,46 @@ async function generateDOCX(
                 new TextRun({
                   text: degree2,
                   bold: true,
-                  size: 22,
-                  color: "000000",
+                  size: cvStyle.fontSize.jobTitle * 2, // Convert pt to half-points
+                  font: cvStyle.fonts.docxHeading || "Arial",
+                  color: cvStyle.colors.heading === rgb(0, 0, 0) ? "000000" : "000000",
                 }),
                 new TextRun({
                   text: ` - ${eduInfo2}`,
-                  size: 20,
-                  color: "000000",
+                  size: cvStyle.fontSize.body * 2, // Convert pt to half-points
+                  font: cvStyle.fonts.docxBody || "Arial",
+                  color: cvStyle.colors.text === rgb(0, 0, 0) ? "000000" : "000000",
                 }),
               ],
-              spacing: { after: 100 },
+              spacing: { after: cvStyle.spacing.betweenItems * 20 }, // Convert to twips
             })
           );
 
-          // Coursework
+          // Coursework - simple bullet point only
           if (edu.coursework && edu.coursework.length > 0) {
+            const bulletChar = cvStyle.layout.bulletStyle === "dash" ? "—" : 
+                              cvStyle.layout.bulletStyle === "arrow" ? "→" : "•";
             children.push(
               new Paragraph({
                 children: [
                   new TextRun({
-                    text: `Relevant Coursework: ${edu.coursework.slice(0, 6).join(", ")}`,
-                    size: 18,
-                    color: "000000",
+                    text: `${bulletChar} Relevant Coursework: ${edu.coursework.slice(0, 6).join(", ")}`,
+                    size: cvStyle.fontSize.contact * 2, // Convert pt to half-points
+                    font: cvStyle.fonts.docxBody || "Arial",
+                    color: cvStyle.colors.text === rgb(0, 0, 0) ? "000000" : "000000",
                   }),
                 ],
-                spacing: { after: 80 },
+                indent: { left: cvStyle.spacing.bulletIndent * 20 }, // Convert to twips
+                spacing: { after: cvStyle.spacing.betweenItems * 20 }, // Convert to twips
               })
             );
-          }
-
-          // Achievements
-          if (edu.achievements && edu.achievements.length > 0) {
-            for (const achievement of edu.achievements.slice(0, 3)) {
-              children.push(
-                new Paragraph({
-                  children: [
-                    new TextRun({
-                      text: `• ${achievement}`,
-                      size: 18,
-                      color: "000000",
-                    }),
-                  ],
-                  spacing: { after: 60 },
-                })
-              );
-            }
           }
         }
         children.push(new Paragraph({ text: "" })); // Spacing
         break;
 
       case "projects":
-        children.push(
-          new Paragraph({
-            children: [
-              new TextRun({
-                text: section.title.toUpperCase(),
-                bold: true,
-                size: 24,
-                color: "000000",
-              }),
-            ],
-            spacing: { before: 240, after: 120 },
-          })
-        );
+        children.push(createSectionHeader(section.title));
         const projLimit2 = getSectionLimits(section.importance, "projects");
         for (const project of section.content.slice(0, projLimit2)) {
           const projName2 = project.name || "Project";
@@ -1144,27 +1185,32 @@ async function generateDOCX(
                 new TextRun({
                   text: projName2,
                   bold: true,
-                  size: 22,
+                  size: cvStyle.fontSize.jobTitle * 2, // Convert pt to half-points
+                  font: cvStyle.fonts.docxHeading || "Arial",
+                  color: cvStyle.colors.heading === rgb(0, 0, 0) ? "000000" : "000000",
                 }),
               ],
-              spacing: { after: 60 },
+              spacing: { after: cvStyle.spacing.betweenItems * 20 }, // Convert to twips
             })
           );
 
           // Use bullets if available, otherwise fallback to description
           if (project.bullets && project.bullets.length > 0) {
             for (const bullet of project.bullets) {
+              const bulletChar = cvStyle.layout.bulletStyle === "dash" ? "—" : 
+                                cvStyle.layout.bulletStyle === "arrow" ? "→" : "•";
               children.push(
                 new Paragraph({
                   children: [
                     new TextRun({
-                      text: `• ${bullet}`,
-                      size: cvStyle.fontSize.body * 2,
+                      text: `${bulletChar} ${bullet}`,
+                      size: cvStyle.fontSize.bullet * 2, // Convert pt to half-points
                       font: cvStyle.fonts.docxBody || "Arial",
+                      color: cvStyle.colors.text === rgb(0, 0, 0) ? "000000" : "000000",
                     }),
                   ],
-                  indent: { left: 360 },
-                  spacing: { after: 40 },
+                  indent: { left: cvStyle.spacing.bulletIndent * 20 }, // Convert to twips
+                  spacing: { after: Math.max(cvStyle.spacing.betweenItems * 20, 80) }, // Convert to twips, min 80
                 })
               );
             }
@@ -1172,9 +1218,16 @@ async function generateDOCX(
             // Fallback to description if bullets not available
             children.push(
               new Paragraph({
-                text: project.description,
-                indent: { left: 360 },
-                spacing: { after: 40 },
+                children: [
+                  new TextRun({
+                    text: project.description,
+                    size: cvStyle.fontSize.body * 2, // Convert pt to half-points
+                    font: cvStyle.fonts.docxBody || "Arial",
+                    color: cvStyle.colors.text === rgb(0, 0, 0) ? "000000" : "000000",
+                  }),
+                ],
+                indent: { left: cvStyle.spacing.bulletIndent * 20 }, // Convert to twips
+                spacing: { after: Math.max(cvStyle.spacing.betweenItems * 20, 80) }, // Convert to twips
               })
             );
           }
@@ -1186,8 +1239,9 @@ async function generateDOCX(
                 children: [
                   new TextRun({
                     text: `Technologies: ${techText2}`,
-                    size: 18,
-                    color: "000000",
+                    size: cvStyle.fontSize.contact * 2, // Convert pt to half-points
+                    font: cvStyle.fonts.docxBody || "Arial",
+                    color: cvStyle.colors.secondary === rgb(0, 0, 0) ? "000000" : "333333",
                     italics: true,
                   }),
                 ],

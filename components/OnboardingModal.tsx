@@ -1,7 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
-import { supabase } from "@/lib/supabase/client";
+import { useState, useRef, useEffect } from "react";
 
 interface OnboardingModalProps {
   userId: string;
@@ -37,12 +36,34 @@ interface ParsedResume {
 }
 
 export default function OnboardingModal({ userId, onComplete }: OnboardingModalProps) {
-  const [step, setStep] = useState<"upload" | "review" | "processing">("upload");
+  const [step, setStep] = useState<"upload" | "review" | "processing" | "payment">("upload");
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [parsedData, setParsedData] = useState<ParsedResume | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Check if user has premium access when modal opens - if so, skip payment step entirely
+  useEffect(() => {
+    const checkPremiumStatus = async () => {
+      try {
+        const response = await fetch(`/api/profiles/get?user_id=${userId}`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.profile?.subscription_tier === "premium") {
+            console.log("✅ OnboardingModal: User has premium, will skip payment step");
+          }
+        }
+      } catch (error) {
+        console.error("Error checking premium status:", error);
+      }
+    };
+    
+    if (userId) {
+      checkPremiumStatus();
+    }
+  }, [userId]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -77,26 +98,26 @@ export default function OnboardingModal({ userId, onComplete }: OnboardingModalP
     setStep("processing");
 
     try {
-      // Step 1: Upload file to Supabase Storage
-      // Note: Don't include bucket name in path - it's already specified in .from("resumes")
-      const fileExt = file.name.split(".").pop();
-      const fileName = `${userId}/${Date.now()}.${fileExt}`;
-      // Path should NOT include "resumes/" prefix since bucket is already "resumes"
-      const filePath = fileName;
+      // Step 1: Upload file to Supabase Storage using secure API
+      const uploadFormData = new FormData();
+      uploadFormData.append("file", file);
+      uploadFormData.append("user_id", userId);
 
-      const { error: uploadError } = await supabase.storage
-        .from("resumes")
-        .upload(filePath, file, {
-          cacheControl: "3600",
-          upsert: false,
-        });
+      const uploadResponse = await fetch("/api/resumes/upload", {
+        method: "POST",
+        body: uploadFormData,
+      });
 
-      if (uploadError) throw uploadError;
+      if (!uploadResponse.ok) {
+        const uploadError = await uploadResponse.json();
+        throw new Error(uploadError.error || "Failed to upload file");
+      }
+
+      const uploadData = await uploadResponse.json();
+      const apiFilePath = uploadData.file_path;
+      const originalFilename = uploadData.original_filename;
 
       // Step 2: Call API to parse the resume
-      // For API, we need to pass the full path including bucket name
-      const apiFilePath = `resumes/${filePath}`;
-
       const response = await fetch("/api/resumes/parse", {
         method: "POST",
         headers: {
@@ -105,6 +126,7 @@ export default function OnboardingModal({ userId, onComplete }: OnboardingModalP
         body: JSON.stringify({
           file_path: apiFilePath, // API needs full path: "resumes/{userId}/{file}"
           user_id: userId,
+          original_filename: originalFilename, // Pass original filename for resume name
         }),
       });
 
@@ -133,46 +155,164 @@ export default function OnboardingModal({ userId, onComplete }: OnboardingModalP
     try {
       // The resume is already saved by the API route
       // Just update the profile to mark resume as uploaded
-      const { data: profileData, error: updateError } = await supabase
-        .from("profiles")
-        .update({
-          has_uploaded_resume: true,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", userId)
-        .select()
-        .single();
+      // CRITICAL: Preserve subscription fields when updating!
+      // First, fetch current profile to preserve subscription fields
+      const profileResponse = await fetch(`/api/profiles/get?user_id=${userId}`);
+      let currentProfile = null;
+      
+      if (profileResponse.ok) {
+        const profileData = await profileResponse.json();
+        currentProfile = profileData.profile;
+      }
 
-      if (updateError) {
-        console.error("Profile update error:", updateError);
-        // If profile doesn't exist, create it
-        if (updateError.code === "PGRST116" || updateError.message.includes("No rows")) {
-          const { error: createError } = await supabase
-            .from("profiles")
-            .insert({
-              id: userId,
+      const updateData: any = {
+        has_uploaded_resume: true,
+      };
+
+      // Preserve subscription-related fields if they exist
+      if (currentProfile) {
+        if (currentProfile.subscription_tier) {
+          updateData.subscription_tier = currentProfile.subscription_tier;
+        }
+        if (currentProfile.cv_generations_remaining !== undefined) {
+          updateData.cv_generations_remaining = currentProfile.cv_generations_remaining;
+        }
+        if (currentProfile.unlimited_access !== undefined) {
+          updateData.unlimited_access = currentProfile.unlimited_access;
+        }
+        if (currentProfile.subscription_id) {
+          updateData.subscription_id = currentProfile.subscription_id;
+        }
+        if (currentProfile.user_status) {
+          updateData.user_status = currentProfile.user_status;
+        }
+        if (currentProfile.onboarding_completed !== undefined) {
+          updateData.onboarding_completed = currentProfile.onboarding_completed;
+        }
+      } else {
+        // Profile doesn't exist, create it with default values
+        updateData.onboarding_completed = false;
+        updateData.user_status = "new";
+      }
+
+      // Update profile using secure API
+      const updateResponse = await fetch("/api/profiles/update", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          user_id: userId,
+          ...updateData,
+        }),
+      });
+
+      if (!updateResponse.ok) {
+        const errorData = await updateResponse.json();
+        // If profile doesn't exist, try to create it
+        if (errorData.error?.includes("not found") || errorData.error?.includes("No rows")) {
+          const createResponse = await fetch("/api/profiles/create", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              user_id: userId,
               has_uploaded_resume: true,
               onboarding_completed: false,
               user_status: "new",
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            });
+            }),
+          });
           
-          if (createError) throw createError;
+          if (!createResponse.ok) {
+            const createError = await createResponse.json();
+            throw new Error(createError.error || "Failed to create profile");
+          }
         } else {
-          throw updateError;
+          throw new Error(errorData.error || "Failed to update profile");
         }
       }
+
+      const updateResult = await updateResponse.json();
+      const profileData = updateResult.profile || currentProfile;
 
       // Small delay to ensure state updates
       await new Promise(resolve => setTimeout(resolve, 100));
       
-      onComplete();
+      // Check if user already has premium access - if so, skip payment and complete onboarding
+      // Use currentProfile (already fetched) or profileData (just updated) to check subscription status
+      const subscriptionTier = currentProfile?.subscription_tier || profileData?.subscription_tier;
+      
+      if (subscriptionTier === "premium") {
+        // User already has premium - complete onboarding without payment step
+        console.log("✅ User has premium access, skipping payment step");
+        setUploading(false);
+        // Mark onboarding as complete and close modal using secure API
+        await fetch("/api/profiles/update", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            user_id: userId,
+            onboarding_completed: true,
+          }),
+        });
+        onComplete();
+      } else {
+        // Move to payment step only if user doesn't have premium
+        console.log("ℹ️ User does not have premium, showing payment step");
+        setStep("payment");
+        setUploading(false);
+      }
     } catch (err: any) {
       console.error("Confirm error:", err);
       setError(err.message || "Failed to save resume. Please try again.");
       setUploading(false);
     }
+  };
+
+  const handlePayment = async () => {
+    if (!userId) return;
+
+    setCheckoutLoading(true);
+    setError(null);
+
+    try {
+      // Create checkout session
+      const response = await fetch("/api/stripe/create-checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          userId,
+          // Will use EARLY_ADOPTER price from env if not provided
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to create checkout session");
+      }
+
+      // Redirect to Stripe Checkout
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        throw new Error("No checkout URL received");
+      }
+    } catch (err: any) {
+      console.error("Checkout error:", err);
+      setError(err.message || "Failed to start checkout. Please try again.");
+      setCheckoutLoading(false);
+    }
+  };
+
+  const handleSkipPayment = () => {
+    // Allow user to skip payment for now
+    onComplete();
   };
 
   const handleSkip = () => {
@@ -215,11 +355,13 @@ export default function OnboardingModal({ userId, onComplete }: OnboardingModalP
               {step === "upload" && "Welcome to VeritasCV!"}
               {step === "processing" && "Processing Your Resume..."}
               {step === "review" && "Review Your Resume"}
+              {step === "payment" && "Complete Your Setup"}
             </h2>
             <p className="text-steel-light">
               {step === "upload" && "Let's start by uploading your CV to build your profile"}
               {step === "processing" && "We're extracting information from your resume"}
               {step === "review" && "Please review the extracted information"}
+              {step === "payment" && "Get unlimited CV generations with our Early Adopter Pack"}
             </p>
           </div>
 
@@ -416,6 +558,66 @@ export default function OnboardingModal({ userId, onComplete }: OnboardingModalP
                 >
                   {uploading ? "Saving..." : "Confirm & Continue"}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* Payment Step */}
+          {step === "payment" && (
+            <div className="space-y-6">
+              <div className="p-6 bg-gradient-to-br from-accent/10 via-accent/5 to-accent/10 rounded-xl border-2 border-accent/30">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="text-2xl font-bold text-foreground mb-1">
+                      Early Adopter Pack
+                    </h3>
+                    <p className="text-steel-light">One-time payment</p>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-3xl font-bold text-accent">€20</div>
+                  </div>
+                </div>
+
+                <div className="space-y-3 mb-6">
+                  <div className="flex items-start gap-3">
+                    <svg className="w-5 h-5 text-accent flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-sm text-steel-light">Unlimited CV generations</span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <svg className="w-5 h-5 text-accent flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-sm text-steel-light">Premium features unlocked</span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <svg className="w-5 h-5 text-accent flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-sm text-steel-light">Early adopter exclusive pricing</span>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <button
+                    onClick={handleSkipPayment}
+                    className="flex-1 py-3 px-6 border border-steel/30 rounded-lg text-steel-light hover:border-accent/50 hover:text-accent transition-colors"
+                  >
+                    Skip for now
+                  </button>
+                  <button
+                    onClick={handlePayment}
+                    disabled={checkoutLoading}
+                    className="flex-1 py-3 px-6 bg-accent text-background rounded-lg font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {checkoutLoading ? "Loading..." : "Get Early Adopter Pack - €20"}
+                  </button>
+                </div>
+
+                <p className="mt-4 text-xs text-steel-light text-center">
+                  Secure payment powered by Stripe
+                </p>
               </div>
             </div>
           )}

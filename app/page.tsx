@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import WaitlistForm from '@/components/WaitlistForm';
 import { supabase } from '@/lib/supabase/client';
+import StructuredData from '@/components/StructuredData';
 
 const scrollToId = (id: string) => {
   const el = document.getElementById(id);

@@ -9,6 +9,7 @@ import ResumePreview from "@/components/ResumePreview";
 import ProgressBar from "@/components/ProgressBar";
 import AISuggestions from "@/components/AISuggestions";
 import RecruiterInfoBanner from "@/components/RecruiterInfoBanner";
+import { getCVStyle, type CVTemplate } from "@/lib/cv/styles";
 
 interface Resume {
   id: string;
@@ -76,6 +77,21 @@ export default function TailorResume() {
     template: "modern",
   });
 
+  const fetchResumes = async (userId: string) => {
+    try {
+      const response = await fetch(`/api/resumes/list?user_id=${userId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setResumes(data.resumes || []);
+        if (data.resumes.length === 0) {
+          setStep("select-resume");
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch resumes:", err);
+    }
+  };
+
   useEffect(() => {
     const checkSession = async () => {
       const { data: { session }, error } = await supabase.auth.getSession();
@@ -88,18 +104,7 @@ export default function TailorResume() {
       setUser(session.user);
 
       if (session.user.id) {
-        try {
-          const response = await fetch(`/api/resumes/list?user_id=${session.user.id}`);
-          if (response.ok) {
-            const data = await response.json();
-            setResumes(data.resumes || []);
-            if (data.resumes.length === 0) {
-              setStep("select-resume");
-            }
-          }
-        } catch (err) {
-          console.error("Failed to fetch resumes:", err);
-        }
+        await fetchResumes(session.user.id);
       }
 
       setLoading(false);
@@ -298,11 +303,20 @@ export default function TailorResume() {
           domain: detectedDomain, // Use detected value
           job_description: formData.job_description, // For keyword extraction
           cv_name: formData.cv_name, // Custom name for CV
+          user_id: user.id, // Pass user_id for quota checking
         }),
       });
 
       if (!cvResponse.ok) {
-        throw new Error("Failed to generate CV");
+        const errorData = await cvResponse.json();
+        // Handle quota limit error
+        if (cvResponse.status === 429) {
+          throw new Error(
+            errorData.message || 
+            `Daily limit reached! You've used ${errorData.dailyLimit || 10} CV generations today. Try again tomorrow.`
+          );
+        }
+        throw new Error(errorData.error || errorData.message || "Failed to generate CV");
       }
 
       const cvData = await cvResponse.json();
@@ -526,6 +540,58 @@ export default function TailorResume() {
                               strokeLinejoin="round"
                               strokeWidth={2}
                               d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                            />
+                          </svg>
+                        </button>
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (confirm(`Are you sure you want to delete "${resume.name || 'this resume'}"? This action cannot be undone.`)) {
+                              try {
+                                const response = await fetch("/api/resumes/delete", {
+                                  method: "DELETE",
+                                  headers: {
+                                    "Content-Type": "application/json",
+                                  },
+                                  body: JSON.stringify({
+                                    resume_id: resume.id,
+                                    user_id: user?.id,
+                                  }),
+                                });
+
+                                if (response.ok) {
+                                  // Refresh the resume list
+                                  if (user?.id) {
+                                    await fetchResumes(user.id);
+                                  }
+                                  // If the deleted resume was selected, clear selection
+                                  if (selectedResume?.id === resume.id) {
+                                    setSelectedResume(null);
+                                  }
+                                } else {
+                                  const errorData = await response.json();
+                                  alert(`Failed to delete resume: ${errorData.error || "Unknown error"}`);
+                                }
+                              } catch (err: any) {
+                                console.error("Delete resume error:", err);
+                                alert(`Failed to delete resume: ${err.message || "Unknown error"}`);
+                              }
+                            }
+                          }}
+                          className="p-2 hover:bg-red-500/20 rounded-lg transition-colors"
+                          title="Delete"
+                        >
+                          <svg
+                            className="w-5 h-5 text-steel-light hover:text-red-500"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
                             />
                           </svg>
                         </button>
@@ -885,8 +951,16 @@ export default function TailorResume() {
                   <option value="modern">Modern</option>
                   <option value="classic">Classic</option>
                   <option value="creative">Creative</option>
+                  <option value="professional">Professional</option>
+                  <option value="minimalist">Minimalist</option>
+                  <option value="executive">Executive</option>
                   <option value="ats-friendly">ATS-Friendly</option>
                 </select>
+                
+                {/* Style Details Display */}
+                {formData.template && (
+                  <TemplateStyleDetails template={formData.template as CVTemplate} />
+                )}
               </div>
             </div>
 
@@ -1087,6 +1161,125 @@ export default function TailorResume() {
       {/* Preview Modal */}
       {previewResume && (
         <ResumePreview resume={previewResume} onClose={() => setPreviewResume(null)} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Component to display template style details
+ */
+function TemplateStyleDetails({ template }: { template: CVTemplate }) {
+  const style = getCVStyle(template);
+  
+  const templateDescriptions: Record<CVTemplate, { name: string; description: string; bestFor: string }> = {
+    modern: {
+      name: "Modern",
+      description: "Clean, contemporary design with balanced spacing",
+      bestFor: "Tech roles, startups, modern companies"
+    },
+    classic: {
+      name: "Classic",
+      description: "Traditional, formal design with conservative styling",
+      bestFor: "Finance, law, academia, traditional industries"
+    },
+    creative: {
+      name: "Creative",
+      description: "Bold, spacious design emphasizing achievements",
+      bestFor: "Design, marketing, creative roles"
+    },
+    professional: {
+      name: "Professional",
+      description: "Polished, corporate design with balanced hierarchy",
+      bestFor: "Corporate roles, mid-to-senior positions"
+    },
+    minimalist: {
+      name: "Minimalist",
+      description: "Clean, minimal design optimized for space",
+      bestFor: "Tech roles, startups, when space is limited"
+    },
+    executive: {
+      name: "Executive",
+      description: "Authoritative, formal design for senior roles",
+      bestFor: "C-level, senior executive, board positions"
+    },
+    "ats-friendly": {
+      name: "ATS-Friendly",
+      description: "Minimal, keyword-optimized design for ATS systems",
+      bestFor: "Online applications, ATS systems"
+    }
+  };
+  
+  const templateInfo = templateDescriptions[template];
+  const headerStyleMap: Record<string, string> = {
+    "bold": "Bold",
+    "underline": "Underlined",
+    "bold-underline": "Bold + Underline",
+    "border": "Bordered"
+  };
+  
+  const bulletStyleMap: Record<string, string> = {
+    "dot": "• (Dot)",
+    "dash": "— (Dash)",
+    "arrow": "→ (Arrow)",
+    "none": "None"
+  };
+  
+  return (
+    <div className="mt-4 p-4 bg-steel/5 border border-steel/20 rounded-xl">
+      <div className="mb-3">
+        <h5 className="font-semibold text-foreground mb-1">{templateInfo.name}</h5>
+        <p className="text-sm text-steel-light">{templateInfo.description}</p>
+        <p className="text-xs text-steel-light mt-1">
+          <span className="font-medium">Best for:</span> {templateInfo.bestFor}
+        </p>
+      </div>
+      
+      <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
+        <div>
+          <span className="text-steel-light">Font:</span>
+          <span className="ml-2 font-medium text-foreground">
+            {style.fonts.docxBody || style.fonts.body}
+          </span>
+        </div>
+        <div>
+          <span className="text-steel-light">Header Style:</span>
+          <span className="ml-2 font-medium text-foreground">
+            {headerStyleMap[style.layout.headerStyle] || style.layout.headerStyle}
+          </span>
+        </div>
+        <div>
+          <span className="text-steel-light">Bullet Style:</span>
+          <span className="ml-2 font-medium text-foreground">
+            {bulletStyleMap[style.layout.bulletStyle] || style.layout.bulletStyle}
+          </span>
+        </div>
+        <div>
+          <span className="text-steel-light">Line Height:</span>
+          <span className="ml-2 font-medium text-foreground">
+            {style.spacing.lineHeight.toFixed(2)}x
+          </span>
+        </div>
+        <div>
+          <span className="text-steel-light">Formality:</span>
+          <span className="ml-2 font-medium text-foreground capitalize">
+            {style.tone.formality}
+          </span>
+        </div>
+        <div>
+          <span className="text-steel-light">Emphasis:</span>
+          <span className="ml-2 font-medium text-foreground capitalize">
+            {style.tone.emphasis}
+          </span>
+        </div>
+      </div>
+      
+      {style.atsOptimized && (
+        <div className="mt-3 pt-3 border-t border-steel/20">
+          <span className="text-xs bg-accent/20 text-accent px-2 py-1 rounded">
+            ✓ ATS Optimized
+          </span>
+        </div>
       )}
     </div>
   );

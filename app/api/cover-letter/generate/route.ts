@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import { getAIConfig } from "@/lib/config/ai";
+import { callAIWithFallback } from "@/lib/ai/fallback";
 
 /**
  * API Route: POST /api/cover-letter/generate
@@ -35,26 +34,6 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-
-    // Get AI configuration
-    const aiConfig = getAIConfig();
-    if (aiConfig.provider !== "gemini") {
-      return NextResponse.json(
-        { error: "Cover letter generation currently only supports Gemini" },
-        { status: 400 }
-      );
-    }
-
-    if (!aiConfig.apiKey) {
-      return NextResponse.json(
-        { error: "Gemini API key not configured" },
-        { status: 500 }
-      );
-    }
-
-    // Initialize Gemini
-    const genAI = new GoogleGenerativeAI(aiConfig.apiKey);
-    const model = genAI.getGenerativeModel({ model: aiConfig.model || "gemini-pro" });
 
     // Build candidate context from resume
     const candidateContext = buildCandidateContext(resume_raw_text, resume_structured_data);
@@ -92,7 +71,7 @@ CRITICAL REQUIREMENTS:
 - Make it feel like a real person wrote it after researching the company and role
 
 COVER LETTER SPECIFICATIONS:
-- Length: 250-400 words (3-4 concise paragraphs)
+- Length: 300-400 words EXACTLY (3-4 concise paragraphs) - CRITICAL: Must be between 300-400 words
 - Structure: Introduction → Body (2-3 paragraphs) → Closing
 - One page maximum
 - Professional but warm tone
@@ -120,6 +99,10 @@ INSTRUCTIONS:
 6. Avoid any phrases that sound AI-generated
 7. Write in a natural, conversational professional tone
 8. Include a strong call to action
+9. MUST use the company name, job title, and job level in the letter naturally
+10. If company description is provided, reference something specific about the company to show research
+11. Adjust tone based on job level (entry = eager, mid = confident, senior = authoritative)
+12. If domain/industry is provided, show understanding of that industry
 
 CRITICAL: 
 - Start DIRECTLY with the cover letter content (greeting, date, or first paragraph)
@@ -134,28 +117,57 @@ Generate the cover letter now. Write it as if the candidate wrote it themselves 
     console.log("[Cover Letter] Application ID:", application_id);
     console.log("[Cover Letter] Job Title:", job_title);
     console.log("[Cover Letter] Company:", company_name || "Not provided");
+    console.log("[Cover Letter] Job Level:", job_level || "Not provided");
+    console.log("[Cover Letter] Domain:", domain || "Not provided");
+    console.log("[Cover Letter] Recruiter:", recruiter_name || "Not provided");
 
-    // Generate cover letter
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    let coverLetterText = response.text().trim();
-
+    // Generate cover letter using Groq with fallback
+    console.log("[Cover Letter] Using AI fallback system (Groq → Gemini → others)...");
+    const { text: rawCoverLetterText, provider, model } = await callAIWithFallback(prompt, {
+      preferredProvider: "groq", // Prefer Groq as default
+    });
+    
+    console.log(`[Cover Letter] Generated using ${provider}/${model}`);
+    
     // Clean up the response (remove markdown formatting if present)
-    coverLetterText = cleanCoverLetterText(coverLetterText);
+    let coverLetterText = cleanCoverLetterText(rawCoverLetterText);
 
-    // Validate length (250-400 words)
-    const wordCount = coverLetterText.split(/\s+/).length;
-    if (wordCount < 200) {
-      console.warn(`[Cover Letter] Warning: Cover letter is too short (${wordCount} words). Regenerating...`);
-      // Could regenerate here if needed, but for now just warn
-    } else if (wordCount > 450) {
-      console.warn(`[Cover Letter] Warning: Cover letter is too long (${wordCount} words). Truncating...`);
-      // Truncate to ~400 words
-      const words = coverLetterText.split(/\s+/);
-      coverLetterText = words.slice(0, 400).join(" ") + "...";
+    // Validate length (300-400 words) - regenerate if needed
+    let wordCount = coverLetterText.split(/\s+/).filter(w => w.length > 0).length;
+    let attempts = 0;
+    const maxAttempts = 2;
+    
+    while ((wordCount < 300 || wordCount > 400) && attempts < maxAttempts) {
+      if (wordCount < 300) {
+        console.warn(`[Cover Letter] Warning: Cover letter is too short (${wordCount} words). Target: 300-400. Regenerating...`);
+        // Add instruction to make it longer
+        const extendedPrompt = prompt + "\n\nIMPORTANT: The previous attempt was too short. Please ensure the cover letter is between 300-400 words. Add more specific details about the candidate's experience and achievements.";
+        const { text: newText } = await callAIWithFallback(extendedPrompt, {
+          preferredProvider: provider, // Use same provider
+        });
+        coverLetterText = cleanCoverLetterText(newText);
+        wordCount = coverLetterText.split(/\s+/).filter(w => w.length > 0).length;
+      } else if (wordCount > 400) {
+        console.warn(`[Cover Letter] Warning: Cover letter is too long (${wordCount} words). Truncating to 400 words...`);
+        // Truncate to exactly 400 words
+        const words = coverLetterText.split(/\s+/).filter(w => w.length > 0);
+        coverLetterText = words.slice(0, 400).join(" ");
+        wordCount = 400;
+      }
+      attempts++;
+    }
+    
+    // Final validation - if still not in range, truncate or pad
+    if (wordCount < 300) {
+      console.warn(`[Cover Letter] Final warning: Cover letter is ${wordCount} words (target: 300-400). Consider regenerating.`);
+    } else if (wordCount > 400) {
+      const words = coverLetterText.split(/\s+/).filter(w => w.length > 0);
+      coverLetterText = words.slice(0, 400).join(" ");
+      wordCount = 400;
+      console.log(`[Cover Letter] Truncated to exactly 400 words.`);
     }
 
-    console.log(`[Cover Letter] Generated cover letter: ${wordCount} words`);
+    console.log(`[Cover Letter] ✅ Generated cover letter: ${wordCount} words (target: 300-400)`);
 
     return NextResponse.json({
       success: true,
@@ -219,7 +231,7 @@ function buildCandidateContext(rawText: string, structuredData?: any): string {
 }
 
 /**
- * Build job context
+ * Build job context - uses ALL job parameters
  */
 function buildJobContext(
   jobTitle: string,
@@ -229,30 +241,34 @@ function buildJobContext(
   jobLevel?: string,
   domain?: string
 ): string {
-  let context = `POSITION: ${jobTitle}\n`;
+  let context = `JOB POSITION DETAILS:\n`;
+  context += `Job Title: ${jobTitle}\n`;
   
   if (companyName) {
-    context += `COMPANY: ${companyName}\n`;
+    context += `Company Name: ${companyName}\n`;
+  } else {
+    context += `Company Name: Not specified (use "Hiring Manager" or company name if mentioned in job description)\n`;
   }
   
   if (companyDescription) {
-    context += `COMPANY INFO: ${companyDescription.substring(0, 300)}...\n`;
+    context += `Company Description: ${companyDescription.substring(0, 500)}\n`;
   }
   
   if (jobLevel) {
-    context += `LEVEL: ${jobLevel}\n`;
+    context += `Job Level: ${jobLevel} (adjust tone accordingly - entry level = eager learner, senior = experienced professional)\n`;
   }
   
   if (domain) {
-    context += `DOMAIN: ${domain}\n`;
+    context += `Industry/Domain: ${domain}\n`;
   }
   
-  context += `\nJOB DESCRIPTION:\n${jobDescription.substring(0, 2000)}...\n`;
+  context += `\nFULL JOB DESCRIPTION:\n${jobDescription}\n`;
   
   // Extract key requirements/keywords
   const keywords = extractKeywords(jobDescription);
   if (keywords.length > 0) {
-    context += `\nKEY REQUIREMENTS/KEYWORDS: ${keywords.slice(0, 15).join(", ")}\n`;
+    context += `\nKEY REQUIREMENTS/KEYWORDS TO MENTION: ${keywords.slice(0, 20).join(", ")}\n`;
+    context += `\nIMPORTANT: Naturally incorporate these keywords into the cover letter to show alignment with the job requirements.\n`;
   }
   
   return context;

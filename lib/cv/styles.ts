@@ -6,7 +6,7 @@
 
 import { rgb } from "pdf-lib";
 
-export type CVTemplate = "modern" | "classic" | "creative" | "ats-friendly";
+export type CVTemplate = "modern" | "classic" | "creative" | "ats-friendly" | "professional" | "minimalist" | "executive";
 
 export interface CVStyle {
   // Typography
@@ -86,11 +86,11 @@ export function getCVStyle(template: CVTemplate): CVStyle {
           bullet: 10, // Bullet points
         },
         spacing: {
-          sectionTop: 20,
-          sectionBottom: 15,
-          betweenItems: 12,
-          lineHeight: 1.4,
-          bulletIndent: 15,
+          sectionTop: 18,
+          sectionBottom: 12,
+          betweenItems: 10,
+          lineHeight: 1.3, // Tighter line height for better space usage
+          bulletIndent: 20, // More indent for better bullet visibility
         },
         colors: {
           text: rgb(0, 0, 0), // Pure black
@@ -99,8 +99,8 @@ export function getCVStyle(template: CVTemplate): CVStyle {
           secondary: rgb(0.3, 0.3, 0.3), // Dark gray for dates/locations
         },
         layout: {
-          margin: 50,
-          contentWidth: 495,
+          margin: 40, // Reduced margins for better width utilization
+          contentWidth: 515, // Increased content width (595 - 40*2 = 515)
           headerStyle: "bold-underline", // Bold with underline
           bulletStyle: "dot", // Standard bullet points
         },
@@ -243,6 +243,138 @@ export function getCVStyle(template: CVTemplate): CVStyle {
           language: "action-oriented",
         },
         atsOptimized: true,
+      };
+
+    case "professional":
+      return {
+        fonts: {
+          body: "Helvetica",
+          heading: "Helvetica-Bold",
+          docxBody: "Calibri",
+          docxHeading: "Calibri Bold",
+        },
+        fontSize: {
+          name: 22, // Prominent name
+          sectionHeader: 13, // Clear section headers
+          jobTitle: 11,
+          body: 10,
+          contact: 9,
+          bullet: 10,
+        },
+        spacing: {
+          sectionTop: 20,
+          sectionBottom: 14,
+          betweenItems: 12,
+          lineHeight: 1.35,
+          bulletIndent: 22,
+        },
+        colors: {
+          text: rgb(0.15, 0.15, 0.15), // Slightly softer black
+          heading: rgb(0, 0, 0), // Pure black for headers
+          accent: rgb(0.2, 0.4, 0.8), // Professional blue accent
+          secondary: rgb(0.35, 0.35, 0.35), // Medium gray
+        },
+        layout: {
+          margin: 45,
+          contentWidth: 505,
+          headerStyle: "bold-underline",
+          bulletStyle: "dot",
+        },
+        tone: {
+          formality: "professional",
+          verbosity: "moderate",
+          emphasis: "balanced",
+          language: "action-oriented",
+        },
+        atsOptimized: false,
+      };
+
+    case "minimalist":
+      return {
+        fonts: {
+          body: "Helvetica",
+          heading: "Helvetica-Bold",
+          docxBody: "Arial",
+          docxHeading: "Arial Bold",
+        },
+        fontSize: {
+          name: 18, // Clean, not too large
+          sectionHeader: 11, // Subtle headers
+          jobTitle: 10,
+          body: 9.5, // Slightly smaller for minimalist look
+          contact: 8.5,
+          bullet: 9.5,
+        },
+        spacing: {
+          sectionTop: 16,
+          sectionBottom: 10,
+          betweenItems: 8,
+          lineHeight: 1.25, // Tighter spacing
+          bulletIndent: 15,
+        },
+        colors: {
+          text: rgb(0.2, 0.2, 0.2), // Soft black
+          heading: rgb(0.1, 0.1, 0.1), // Dark gray
+          accent: rgb(0, 0, 0),
+          secondary: rgb(0.4, 0.4, 0.4), // Light gray
+        },
+        layout: {
+          margin: 50,
+          contentWidth: 495,
+          headerStyle: "bold", // Simple bold, no underline
+          bulletStyle: "dash", // Minimal dashes
+        },
+        tone: {
+          formality: "professional",
+          verbosity: "concise",
+          emphasis: "balanced",
+          language: "action-oriented",
+        },
+        atsOptimized: false,
+      };
+
+    case "executive":
+      return {
+        fonts: {
+          body: "Times-Roman",
+          heading: "Times-Bold",
+          docxBody: "Times New Roman",
+          docxHeading: "Times New Roman Bold",
+        },
+        fontSize: {
+          name: 24, // Large, authoritative
+          sectionHeader: 14, // Prominent headers
+          jobTitle: 12,
+          body: 11, // Slightly larger for readability
+          contact: 10,
+          bullet: 11,
+        },
+        spacing: {
+          sectionTop: 24,
+          sectionBottom: 16,
+          betweenItems: 14,
+          lineHeight: 1.4, // More breathing room
+          bulletIndent: 25,
+        },
+        colors: {
+          text: rgb(0, 0, 0), // Pure black
+          heading: rgb(0, 0, 0), // Pure black
+          accent: rgb(0, 0, 0),
+          secondary: rgb(0.25, 0.25, 0.25), // Dark gray
+        },
+        layout: {
+          margin: 55, // Generous margins
+          contentWidth: 485,
+          headerStyle: "bold-underline", // Bold with underline
+          bulletStyle: "dot",
+        },
+        tone: {
+          formality: "formal",
+          verbosity: "detailed",
+          emphasis: "experience",
+          language: "descriptive",
+        },
+        atsOptimized: false,
       };
 
     default:

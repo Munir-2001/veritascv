@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase/client";
 import Link from "next/link";
 import OnboardingModal from "@/components/OnboardingModal";
 import JobApplicationsList from "@/components/JobApplicationsList";
+import StripeCheckoutButton from "@/components/StripeCheckoutButton";
 
 interface User {
   email?: string;
@@ -22,6 +23,8 @@ interface Profile {
   has_uploaded_resume: boolean;
   user_status: "new" | "active" | "returning";
   resume_id?: string;
+  unlimited_access?: boolean;
+  subscription_tier?: string;
 }
 
 interface DashboardStats {
@@ -56,6 +59,66 @@ export default function Dashboard() {
 
       setUser(session.user);
 
+      // Check for payment success callback (after we have user)
+      const urlParams = new URLSearchParams(window.location.search);
+      const success = urlParams.get("success");
+      const sessionId = urlParams.get("session_id");
+      
+      if (success === "true" && sessionId && session.user.id) {
+        // Verify payment and update database
+        try {
+          console.log("Verifying payment for session:", sessionId);
+          const verifyResponse = await fetch(
+            `/api/stripe/verify-payment?session_id=${sessionId}&user_id=${session.user.id}`
+          );
+          const verifyResult = await verifyResponse.json();
+          
+          if (verifyResponse.ok) {
+            console.log("✅ Payment verified and database updated:", verifyResult);
+            // Wait a moment for database to update, then refresh profile
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Refresh profile to show updated subscription
+            const profileResponse = await fetch(
+              `/api/profiles/get?user_id=${session.user.id}`
+            );
+            const profileResult = await profileResponse.json();
+            
+            console.log("🔍 Profile fetch result:", profileResult);
+            
+            if (profileResult.profile) {
+              setProfile(profileResult.profile);
+              console.log("✅ Profile refreshed:", {
+                subscription_tier: profileResult.profile.subscription_tier,
+                unlimited_access: profileResult.profile.unlimited_access,
+                cv_generations_remaining: profileResult.profile.cv_generations_remaining,
+                subscription_id: profileResult.profile.subscription_id,
+                user_status: profileResult.profile.user_status,
+                full_profile: profileResult.profile,
+              });
+            } else {
+              console.warn("⚠️ Profile not found after payment verification");
+            }
+            // Remove query params from URL
+            router.replace("/dashboard");
+          } else {
+            console.error("❌ Payment verification failed:", verifyResult);
+            // Still refresh profile in case it was partially updated
+            await new Promise(resolve => setTimeout(resolve, 500));
+            const profileResponse = await fetch(
+              `/api/profiles/get?user_id=${session.user.id}`
+            );
+            const profileResult = await profileResponse.json();
+            if (profileResult.profile) {
+              setProfile(profileResult.profile);
+              console.log("✅ Profile refreshed after error:", profileResult.profile);
+            }
+          }
+        } catch (error) {
+          console.error("Error verifying payment:", error);
+        }
+      }
+
       // Fetch user profile to check onboarding status
       if (session.user.id) {
         try {
@@ -73,20 +136,45 @@ export default function Dashboard() {
             body: JSON.stringify({ user_id: session.user.id }),
           });
 
+          let finalProfile = null;
           if (syncResponse.ok) {
             const syncResult = await syncResponse.json();
             if (syncResult.profile) {
-              setProfile(syncResult.profile);
+              finalProfile = syncResult.profile;
+              setProfile(finalProfile);
               if (syncResult.synced) {
                 console.log(`Profile synced: ${syncResult.message}`);
               }
+              // Debug: Log subscription status
+              console.log("🔍 Profile after sync:", {
+                subscription_tier: finalProfile.subscription_tier,
+                has_uploaded_resume: finalProfile.has_uploaded_resume,
+                cv_generations_remaining: finalProfile.cv_generations_remaining,
+              });
             } else {
               // Fallback to profile from get API
-              setProfile(profileResult.profile);
+              finalProfile = profileResult.profile;
+              setProfile(finalProfile);
+              console.log("🔍 Profile from get API (fallback):", {
+                subscription_tier: finalProfile?.subscription_tier,
+                has_uploaded_resume: finalProfile?.has_uploaded_resume,
+              });
             }
           } else {
             // Fallback to profile from get API
-            setProfile(profileResult.profile);
+            finalProfile = profileResult.profile;
+            setProfile(finalProfile);
+            console.log("🔍 Profile from get API (sync failed):", {
+              subscription_tier: finalProfile?.subscription_tier,
+              has_uploaded_resume: finalProfile?.has_uploaded_resume,
+            });
+          }
+
+          // Only show onboarding modal if user hasn't uploaded a CV yet AND doesn't have premium access
+          // If they have premium access, skip onboarding (they can upload CV later if needed)
+          // If they have a CV but haven't paid, we'll show a payment prompt separately
+          if (!finalProfile || (!finalProfile.has_uploaded_resume && finalProfile.subscription_tier !== "premium")) {
+            setShowOnboarding(true);
           }
 
           // Fetch dashboard stats
@@ -153,6 +241,18 @@ export default function Dashboard() {
 
     return () => subscription.unsubscribe();
   }, [router]);
+
+  // Debug: Log profile subscription status when it changes
+  useEffect(() => {
+    if (profile) {
+      console.log("💳 Payment prompt visibility check:", {
+        has_uploaded_resume: profile.has_uploaded_resume,
+        subscription_tier: profile.subscription_tier,
+        shouldShowPrompt: profile.has_uploaded_resume && profile.subscription_tier !== "premium",
+        fullProfile: profile,
+      });
+    }
+  }, [profile]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -292,6 +392,13 @@ export default function Dashboard() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-6 py-12">
+        {/* Success Message from Stripe */}
+        {typeof window !== "undefined" && new URLSearchParams(window.location.search).get("success") && (
+          <div className="mb-6 p-4 bg-green-500/10 border border-green-500/30 rounded-xl text-green-500 text-center">
+            ✅ Payment successful! Your account has been upgraded to premium.
+          </div>
+        )}
+
         {/* Welcome Section */}
         <div className="mb-12">
           <h2 className="text-4xl md:text-5xl font-bold mb-4 tracking-tight">
@@ -301,6 +408,49 @@ export default function Dashboard() {
             Optimize your resume and land your <span className="font-bold text-accent">dream job</span>
           </p>
         </div>
+
+        {/* Payment Prompt - Show if user has CV but no premium subscription */}
+        {profile && profile.has_uploaded_resume && profile.subscription_tier !== "premium" && (
+          <div className="mb-12 p-8 bg-gradient-to-br from-accent/10 via-accent/5 to-accent/10 rounded-3xl border-2 border-accent/30 relative overflow-hidden" data-payment-prompt>
+            <div className="absolute inset-0 bg-gradient-to-br from-accent/5 via-transparent to-accent/5 pointer-events-none"></div>
+            <div className="relative z-10">
+              <div className="flex items-start gap-6">
+                <div className="w-16 h-16 bg-accent rounded-2xl flex items-center justify-center flex-shrink-0">
+                  <svg className="w-8 h-8 text-background" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-2xl font-bold text-foreground mb-2">
+                    Unlock Unlimited CV Generations
+                  </h3>
+                  <p className="text-steel-light mb-4 text-lg">
+                    Get the Early Adopter Pack for just €20 and enjoy unlimited CV generations, premium features, and exclusive early access benefits.
+                  </p>
+                  <div className="flex gap-3">
+                    <StripeCheckoutButton
+                      userId={user?.id || ""}
+                      buttonText="Get Early Adopter Pack - €20"
+                      className="px-6 py-3"
+                    />
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    const card = document.querySelector('[data-payment-prompt]') as HTMLElement;
+                    if (card) card.style.display = 'none';
+                  }}
+                  className="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-steel/20 transition-colors text-steel-light hover:text-foreground flex-shrink-0"
+                  aria-label="Dismiss"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Upload CV Prompt - Show if no resume uploaded */}
         {profile && !profile.has_uploaded_resume && (
@@ -435,7 +585,12 @@ export default function Dashboard() {
           </Link>
 
           {/* CV Audit */}
-          <div className="group p-8 bg-steel/5 rounded-3xl shadow-sm border border-steel/20 hover:shadow-xl hover:shadow-accent/20 hover:border-accent/50 transition-all duration-300 hover:-translate-y-1 backdrop-blur-sm cursor-pointer">
+          <div className="group p-8 bg-steel/5 rounded-3xl shadow-sm border border-steel/20 hover:shadow-xl hover:shadow-accent/20 hover:border-accent/50 transition-all duration-300 hover:-translate-y-1 backdrop-blur-sm cursor-pointer relative">
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm rounded-3xl z-10 flex items-center justify-center">
+              <span className="text-2xl font-bold text-accent/90 bg-accent/10 px-6 py-3 rounded-xl border-2 border-accent/30">
+                Coming Soon
+              </span>
+            </div>
             <div className="w-14 h-14 bg-accent rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
               <svg className="w-7 h-7 text-background" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -451,7 +606,12 @@ export default function Dashboard() {
           </div>
 
           {/* Cover Letter */}
-          <div className="group p-8 bg-steel/5 rounded-3xl shadow-sm border border-steel/20 hover:shadow-xl hover:shadow-accent/20 hover:border-accent/50 transition-all duration-300 hover:-translate-y-1 backdrop-blur-sm cursor-pointer">
+          <div className="group p-8 bg-steel/5 rounded-3xl shadow-sm border border-steel/20 hover:shadow-xl hover:shadow-accent/20 hover:border-accent/50 transition-all duration-300 hover:-translate-y-1 backdrop-blur-sm cursor-pointer relative">
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm rounded-3xl z-10 flex items-center justify-center">
+              <span className="text-2xl font-bold text-accent/90 bg-accent/10 px-6 py-3 rounded-xl border-2 border-accent/30">
+                Coming Soon
+              </span>
+            </div>
             <div className="w-14 h-14 bg-accent rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
               <svg className="w-7 h-7 text-background" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -467,7 +627,12 @@ export default function Dashboard() {
           </div>
 
           {/* ATS Optimization */}
-          <div className="group p-8 bg-steel/5 rounded-3xl shadow-sm border border-steel/20 hover:shadow-xl hover:shadow-accent/20 hover:border-accent/50 transition-all duration-300 hover:-translate-y-1 backdrop-blur-sm cursor-pointer">
+          <div className="group p-8 bg-steel/5 rounded-3xl shadow-sm border border-steel/20 hover:shadow-xl hover:shadow-accent/20 hover:border-accent/50 transition-all duration-300 hover:-translate-y-1 backdrop-blur-sm cursor-pointer relative">
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm rounded-3xl z-10 flex items-center justify-center">
+              <span className="text-2xl font-bold text-accent/90 bg-accent/10 px-6 py-3 rounded-xl border-2 border-accent/30">
+                Coming Soon
+              </span>
+            </div>
             <div className="w-14 h-14 bg-accent rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
               <svg className="w-7 h-7 text-background" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -483,7 +648,12 @@ export default function Dashboard() {
           </div>
 
           {/* Smart Bullet Points */}
-          <div className="group p-8 bg-steel/5 rounded-3xl shadow-sm border border-steel/20 hover:shadow-xl hover:shadow-accent/20 hover:border-accent/50 transition-all duration-300 hover:-translate-y-1 backdrop-blur-sm cursor-pointer">
+          <div className="group p-8 bg-steel/5 rounded-3xl shadow-sm border border-steel/20 hover:shadow-xl hover:shadow-accent/20 hover:border-accent/50 transition-all duration-300 hover:-translate-y-1 backdrop-blur-sm cursor-pointer relative">
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm rounded-3xl z-10 flex items-center justify-center">
+              <span className="text-2xl font-bold text-accent/90 bg-accent/10 px-6 py-3 rounded-xl border-2 border-accent/30">
+                Coming Soon
+              </span>
+            </div>
             <div className="w-14 h-14 bg-accent rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
               <svg className="w-7 h-7 text-background" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
@@ -499,7 +669,12 @@ export default function Dashboard() {
           </div>
 
           {/* Resume Templates */}
-          <div className="group p-8 bg-steel/5 rounded-3xl shadow-sm border border-steel/20 hover:shadow-xl hover:shadow-accent/20 hover:border-accent/50 transition-all duration-300 hover:-translate-y-1 backdrop-blur-sm cursor-pointer">
+          <div className="group p-8 bg-steel/5 rounded-3xl shadow-sm border border-steel/20 hover:shadow-xl hover:shadow-accent/20 hover:border-accent/50 transition-all duration-300 hover:-translate-y-1 backdrop-blur-sm cursor-pointer relative">
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm rounded-3xl z-10 flex items-center justify-center">
+              <span className="text-2xl font-bold text-accent/90 bg-accent/10 px-6 py-3 rounded-xl border-2 border-accent/30">
+                Coming Soon
+              </span>
+            </div>
             <div className="w-14 h-14 bg-accent rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
               <svg className="w-7 h-7 text-background" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
