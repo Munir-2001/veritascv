@@ -139,7 +139,9 @@ export default function Login() {
               </button>
 
               <p className="mt-6 text-steel-light text-sm">
-                By continuing, you agree to our Terms of Service and Privacy Policy
+                By continuing, you agree to our{" "}
+                <Link href="/privacy" className="text-accent hover:underline">Privacy Policy</Link>
+                {mode === "signup" && " and consent to the processing of your personal data"}
               </p>
 
               <div className="mt-8 pt-6 border-t border-steel/20">
