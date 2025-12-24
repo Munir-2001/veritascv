@@ -214,8 +214,8 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
 
   // Determine plan type and tier
   const priceId = subscription.items.data[0]?.price.id;
-  const planType = subscription.items.data[0]?.price.recurring?.interval || "monthly";
-  const tier = planType === "annual" ? "premium" : "basic";
+  const planType = subscription.items.data[0]?.price.recurring?.interval || "month";
+  const tier = planType === "year" ? "premium" : "basic";
 
   // Update or create subscription in database
   const { data: existingSub } = await supabase
