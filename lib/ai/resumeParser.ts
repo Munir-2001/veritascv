@@ -53,21 +53,47 @@ interface ParsedResumeData {
   achievements?: string[];
 }
 
-const RESUME_PARSING_PROMPT = `You are an expert resume parser and career coach. Your job is to:
-1. Extract ALL information from the resume accurately
-2. Optimize descriptions for impact (action verbs, quantifiable metrics)
-3. Structure the data properly
-4. Maintain factual accuracy while improving clarity
+const RESUME_PARSING_PROMPT = `You are an expert resume parser. Your job is to extract ALL information from the resume accurately and structure it properly.
 
-IMPORTANT RULES:
-- Extract EVERY piece of information (don't skip anything)
-- For experience: Include job title, company, dates, location, and ALL bullet points
-- For education: Include degree, school, graduation year, GPA if mentioned, honors
-- For projects: Extract name, description, technologies used, links if any
-- For skills: List ALL technical and professional skills mentioned
-- For certifications: Include name, issuer, year, credential ID if present
-- Optimize bullet points: Start with action verbs, add metrics where possible
+CRITICAL FORMATTING RULES:
+
+1. EXPERIENCE SECTION:
+   - Extract ONLY actual job/work experience (not projects, not internships that are actually projects)
+   - Format: Company Name → Job Title → Dates → Bullet Points
+   - Each experience entry MUST have:
+     * company: The company name (extract accurately, don't mix with descriptions)
+     * title: The job title/position
+     * duration: Employment dates (format: "Month Year - Month Year" or "Month Year - Present")
+     * location: City, Country (if mentioned)
+     * achievements: Array of ALL bullet points describing what the person did at that job
+   - DO NOT include descriptions in the company name field
+   - DO NOT attach dates to company names
+   - Extract ALL bullet points/contributions the person made at each company
+   - Only include actual employment - exclude projects, academic work, or volunteer work unless explicitly listed as work experience
+
+2. PROJECTS SECTION:
+   - Extract ONLY projects that are explicitly under a "Projects" heading
+   - Each project should have: name, description, technologies, link (if any)
+   - Do NOT extract projects from other sections
+
+3. EDUCATION SECTION:
+   - Extract degree, institution, year, GPA (if mentioned), honors, relevant coursework
+
+4. SKILLS SECTION:
+   - Extract ALL technical and professional skills mentioned
+
+5. CERTIFICATIONS SECTION:
+   - Extract name, issuer, year, credential ID (if present)
+
+6. CONTACT INFORMATION:
+   - Extract name, email, phone, LinkedIn, GitHub, location from header
+
+IMPORTANT:
+- Extract EVERYTHING accurately - don't skip any information
 - Keep all factual information accurate - don't make up details
+- For experience: Company name should be clean (no descriptions attached)
+- For experience: All bullet points should be in the achievements array
+- Preserve the original wording of bullet points (don't over-optimize)
 
 Return ONLY valid JSON in this exact format:
 {
@@ -81,14 +107,14 @@ Return ONLY valid JSON in this exact format:
   },
   "experience": [
     {
-      "title": "Job Title",
-      "company": "Company Name",
+      "title": "Job Title/Position",
+      "company": "Company Name (clean, no descriptions)",
       "duration": "Month Year - Month Year",
-      "location": "City, Country",
-      "description": "Main role description",
+      "location": "City, Country (if mentioned)",
       "achievements": [
-        "Led team of X engineers to deliver Y resulting in Z% improvement",
-        "Developed system handling X users with Y% uptime"
+        "First bullet point describing what person did",
+        "Second bullet point describing contributions",
+        "All bullet points from the resume for this job"
       ]
     }
   ],
@@ -206,6 +232,8 @@ export function convertToInternalFormat(aiData: ParsedResumeData): any {
       company: exp.company,
       duration: exp.duration,
       location: exp.location,
+      // Convert achievements array to bullets array (for consistency)
+      bullets: exp.achievements || (exp.description ? [exp.description] : []),
       description: exp.achievements?.join("\n") || exp.description || "",
     })),
     education: aiData.education.map(edu => ({

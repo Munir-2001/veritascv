@@ -14,6 +14,9 @@ import { getCVStrategy, type JobLevel, enhanceBulletPoint, extractMetrics } from
 import { prepareCVSections, getSectionLimits } from "@/lib/cv/renderer";
 import { getCVStyle, getToneInstructions, getATSSectionTitle, type CVTemplate } from "@/lib/cv/styles";
 import { checkDailyQuota } from "@/lib/stripe/daily-quota";
+import { renderLatexTemplate } from "@/lib/cv/latex-renderer";
+import { compileLatexToPDF } from "@/lib/cv/latex-compiler";
+import { convertToCVData } from "@/lib/cv/data-converter";
 
 /**
  * API Route: POST /api/cv/generate
@@ -182,15 +185,47 @@ export async function POST(request: NextRequest) {
     // Use professional_summary from finalData if available, otherwise use tailored_text
     const summaryText = finalData.professional_summary || tailored_text || "";
 
-    // Generate PDF with final optimized data
-    const pdfBuffer = await generatePDF(
-      finalData, 
-      summaryText, 
-      template, 
-      job_title,
-      contactInfo,
-      strategy
-    );
+    // Map template name to LaTeX template ID
+    const latexTemplateId = mapTemplateToLatexId(template, job_level as JobLevel);
+    console.log(`[CV Generation] Using LaTeX template: ${latexTemplateId} (from ${template})`);
+
+    // Try LaTeX generation first, fallback to old PDF generation if it fails
+    let pdfBuffer: Buffer;
+    try {
+      // Convert data to CVData format
+      const cvData = convertToCVData(
+        finalData,
+        contactInfo,
+        job_title,
+        job_description ? extractKeywordsForBolding(job_description) : undefined
+      );
+
+      // Render LaTeX template
+      const latexContent = renderLatexTemplate(latexTemplateId, cvData);
+      
+      // Compile LaTeX to PDF
+      const compilationResult = await compileLatexToPDF(latexContent);
+      
+      if (compilationResult.success && compilationResult.pdfBuffer) {
+        console.log("[CV Generation] ✅ LaTeX compilation successful");
+        pdfBuffer = compilationResult.pdfBuffer;
+      } else {
+        throw new Error(compilationResult.error || "LaTeX compilation failed");
+      }
+    } catch (latexError: any) {
+      console.warn(`[CV Generation] ⚠️ LaTeX generation failed: ${latexError.message}, falling back to PDF-lib`);
+      console.warn(`[CV Generation] LaTeX error details:`, latexError);
+      
+      // Fallback to old PDF generation
+      pdfBuffer = await generatePDF(
+        finalData, 
+        summaryText, 
+        template, 
+        job_title,
+        contactInfo,
+        strategy
+      );
+    }
 
     // Generate DOCX with final optimized data
     const docxBuffer = await generateDOCX(
@@ -358,6 +393,39 @@ function extractKeywordsForBolding(jobDescription: string): string[] {
   });
   
   return [...new Set(keywords)]; // Remove duplicates
+}
+
+/**
+ * Map template name to LaTeX template ID
+ */
+function mapTemplateToLatexId(template: string, jobLevel: JobLevel): string {
+  // Direct mapping for LaTeX templates
+  const templateMap: Record<string, string> = {
+    'ats-friendly': 'ats-friendly-technical',
+    'modern': 'modern-cv',
+    'professional': 'professional-resume',
+    'classic': 'professional-resume', // Use professional for classic
+    'creative': 'modern-cv', // Use modern for creative
+    'minimalist': 'ats-friendly-technical', // Use ATS-friendly for minimalist
+    'executive': 'senior-level',
+  };
+
+  // If template is directly mapped, use it
+  if (templateMap[template]) {
+    return templateMap[template];
+  }
+
+  // Otherwise, map based on job level
+  switch (jobLevel) {
+    case 'entry':
+      return 'entry-level';
+    case 'senior':
+    case 'executive':
+      return 'senior-level';
+    case 'mid':
+    default:
+      return 'professional-resume';
+  }
 }
 
 /**

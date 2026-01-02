@@ -1,0 +1,75 @@
+{
+  "templates": [
+    {
+      "id": "ats-friendly-technical",
+      "name": "ATS-Friendly Technical Resume",
+      "description": "Optimized for ATS systems and technical roles. Clean, machine-readable format with keyword emphasis.",
+      "useCases": [
+        "Online job applications",
+        "ATS (Applicant Tracking Systems)",
+        "Technical roles (Software Engineer, Data Scientist, etc.)",
+        "When keyword matching is critical"
+      ],
+      "file": "ats-friendly-technical.tex",
+      "category": "technical",
+      "optimizedFor": ["ats", "keywords", "technical"]
+    },
+    {
+      "id": "entry-level",
+      "name": "Entry-Level CV",
+      "description": "Perfect for recent graduates, career changers, and entry-level positions. Emphasizes education and projects.",
+      "useCases": [
+        "Recent graduates",
+        "Entry-level positions",
+        "Career changers",
+        "When education/projects are more important than extensive experience"
+      ],
+      "file": "entry-level.tex",
+      "category": "entry-level",
+      "optimizedFor": ["education", "projects", "skills"]
+    },
+    {
+      "id": "modern-cv",
+      "name": "Modern CV",
+      "description": "Contemporary design perfect for tech roles, startups, and modern companies. Clean aesthetics with excellent readability.",
+      "useCases": [
+        "Tech roles (Software Engineer, Developer, etc.)",
+        "Startups and modern companies",
+        "When you want a contemporary, clean look",
+        "Roles that value modern design"
+      ],
+      "file": "modern-cv.tex",
+      "category": "modern",
+      "optimizedFor": ["modern", "tech", "startups"]
+    },
+    {
+      "id": "professional-resume",
+      "name": "Professional Resume",
+      "description": "Polished, corporate design ideal for mid-to-senior positions and traditional industries. Balanced layout with professional standards.",
+      "useCases": [
+        "Corporate roles",
+        "Mid-to-senior positions",
+        "Traditional industries (Finance, Consulting, etc.)",
+        "When professional appearance is key"
+      ],
+      "file": "professional-resume.tex",
+      "category": "professional",
+      "optimizedFor": ["corporate", "professional", "traditional"]
+    },
+    {
+      "id": "senior-level",
+      "name": "Senior-Level Resume",
+      "description": "Authoritative design for senior positions and executives. Emphasizes leadership, achievements, and extensive experience.",
+      "useCases": [
+        "Senior positions (Senior Engineer, Lead, etc.)",
+        "Executive roles",
+        "C-level positions",
+        "When leadership and achievements are the focus"
+      ],
+      "file": "senior-level.tex",
+      "category": "senior",
+      "optimizedFor": ["senior", "executive", "leadership", "achievements"]
+    }
+  ]
+}
+
