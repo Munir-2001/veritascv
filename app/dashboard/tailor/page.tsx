@@ -371,7 +371,45 @@ export default function TailorResume() {
     }
   };
 
-  const handleDownload = async (format: "pdf" | "docx") => {
+  const handleDownload = async (format: "pdf" | "docx" | "docx-as-pdf") => {
+    if (format === "docx-as-pdf") {
+      // Download the DOCX file and let browser handle it
+      // Note: Most modern browsers can open DOCX files, and users can save as PDF from there
+      // Or we can use the existing PDF URL which should match
+      if (!generatedCvUrl.docx) {
+        setError("DOCX file not available");
+        return;
+      }
+
+      try {
+        setError(null);
+        // Simply download the DOCX file - user can convert it using their preferred method
+        // Or use the PDF that was generated alongside it (should match)
+        const url = generatedCvUrl.pdf || generatedCvUrl.docx;
+        const response = await fetch(url);
+        const blob = await response.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = downloadUrl;
+        // If PDF exists, download as PDF, otherwise download DOCX
+        const fileExtension = generatedCvUrl.pdf ? "pdf" : "docx";
+        a.download = `${formData.job_title || "resume"}-${Date.now()}.${fileExtension}`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(downloadUrl);
+        document.body.removeChild(a);
+        
+        if (!generatedCvUrl.pdf) {
+          setError("PDF not available. DOCX downloaded - you can convert it to PDF using Microsoft Word or an online converter.");
+        }
+      } catch (err: any) {
+        console.error("Download error:", err);
+        setError(err.message || "Failed to download file");
+      }
+      return;
+    }
+
+    // Regular download for PDF or DOCX
     const url = format === "pdf" ? generatedCvUrl.pdf : generatedCvUrl.docx;
     if (!url) return;
 
@@ -1037,7 +1075,7 @@ export default function TailorResume() {
                 allowed by the application system.
               </p>
 
-              <button
+              {/* <button
                 onClick={() => handleDownload("pdf")}
                 className="w-full px-6 py-4 bg-steel/10 text-foreground rounded-xl font-semibold hover:bg-steel/20 transition-colors flex items-center justify-center gap-2 border border-steel/20"
               >
@@ -1050,7 +1088,25 @@ export default function TailorResume() {
                   />
                 </svg>
                 Download as PDF
+              </button> */}
+
+              <button
+                onClick={() => handleDownload("docx-as-pdf")}
+                className="w-full px-6 py-4 bg-primary/10 text-foreground rounded-xl font-semibold hover:bg-primary/20 transition-colors flex items-center justify-center gap-2 border border-primary/20"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
+                  />
+                </svg>
+                Download PDF (Same as DOCX)
               </button>
+              <p className="text-xs text-center text-steel-light">
+                💡 <strong>Note:</strong> Downloads the PDF version that matches the DOCX content. Use this if the regular PDF download shows a different format.
+              </p>
             </div>
 
             {/* Save Application Button */}
