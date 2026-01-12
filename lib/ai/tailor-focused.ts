@@ -400,50 +400,91 @@ async function optimizeExperience(
     console.log(`[Focused Tailoring] Will optimize bullets with AI while preserving job details...`);
     
     // Build a prompt to optimize the existing structured experience
+    // IMPORTANT: Include ALL bullets from ALL jobs - don't truncate
     const experienceText = structuredData.experience.map((exp: any, idx: number) => {
       const bullets = exp.bullets || [exp.description] || exp.achievements || [];
-      return `\nJOB ${idx + 1}:\nTitle: ${exp.title}\nCompany: ${exp.company}\nDuration: ${exp.duration}\nLocation: ${exp.location || ""}\nCurrent Bullets:\n${bullets.map((b: string, i: number) => `  ${i + 1}. ${b}`).join("\n")}`;
+      // Log how many bullets we're passing for each job
+      console.log(`[Focused Tailoring] Job ${idx + 1} (${exp.title} at ${exp.company}): ${bullets.length} bullets`);
+      return `\nJOB ${idx + 1}:\nTitle: ${exp.title}\nCompany: ${exp.company}\nDuration: ${exp.duration}\nLocation: ${exp.location || ""}\nOriginal Bullets (${bullets.length} total):\n${bullets.map((b: string, i: number) => `  ${i + 1}. ${b}`).join("\n")}`;
     }).join("\n");
     
-    const optimizePrompt = `You are an expert resume writer. Optimize existing work experience for a job application.
+    console.log(`[Focused Tailoring] 📋 Passing ${structuredData.experience.length} jobs with ALL bullets to AI for optimization`);
+    
+    const optimizePrompt = `You are an expert resume writer. Optimize existing work experience bullet points SPECIFICALLY for this job application.
 
+JOB DESCRIPTION (READ CAREFULLY - THIS IS WHAT YOU'RE OPTIMIZING FOR):
 ${jobContext}
 
 ${toneInstructions}
 
-KEYWORDS TO MATCH: ${keywords.slice(0, 30).join(", ")}
+KEYWORDS FROM JOB DESCRIPTION TO INCORPORATE: ${keywords.slice(0, 30).join(", ")}
 
 EXISTING WORK EXPERIENCE TO OPTIMIZE:
 ${experienceText}
 
 TASK:
-Optimize EACH job's bullet points to:
-1. Incorporate job keywords naturally
-2. Add quantifiable metrics where possible (%, $, team size, time saved, users)
-3. Use strong action verbs (Led, Developed, Architected, Optimized, etc.)
-4. Show direct relevance to the job description requirements
-5. Maintain exactly 2 bullets per job
-6. PRESERVE the job title, company, duration, and location EXACTLY as provided
+For EACH job, optimize the bullet points to be HIGHLY RELEVANT to the job description above. 
+
+CRITICAL OPTIMIZATION REQUIREMENTS:
+1. **JOB DESCRIPTION ALIGNMENT**: Each bullet MUST directly relate to requirements mentioned in the job description above
+   - If the job requires "scalable systems", mention scalability achievements
+   - If the job requires "API development", highlight API work
+   - If the job requires "team collaboration", emphasize team achievements
+   - Match the language, terminology, and focus areas from the job description
+
+2. **KEYWORD INCORPORATION**: Naturally weave in keywords from the job description (${keywords.slice(0, 30).join(", ")})
+   - Use the exact technologies mentioned in the job description
+   - Match the job's domain focus (e.g., fintech, healthcare, e-commerce)
+   - Align with the job's priorities (e.g., performance, security, user experience)
+
+3. **METRICS & IMPACT**: Add quantifiable metrics where possible (%, $, team size, time saved, users, transactions, performance improvements, scale)
+   - If original bullets have metrics, enhance them
+   - If not, add reasonable metrics based on the work described
+
+4. **ACTION VERBS**: Start with strong action verbs (Led, Developed, Architected, Optimized, Implemented, Delivered, Built, Designed, etc.)
+
+5. **COMPLETE SENTENCES**: Each bullet MUST be a complete, meaningful sentence (NOT cut off mid-sentence)
+   - Each bullet should be 1-2 lines max (aim for 100-150 characters)
+   - Ensure bullets are NOT truncated - each must be a full, complete statement
+
+6. **PRESERVE INFORMATION**: PRESERVE ALL information from original bullets
+   - Merge related bullets if they cover similar topics
+   - Don't lose any key achievements or responsibilities
+   - If original bullets are incomplete/cut off, complete them logically based on context
+
+7. **BULLET COUNT**: Create 2-4 optimized bullets per job
+   - Prioritize bullets that best match the job description
+   - Merge related bullets to create stronger, more impactful statements
+
+8. **PRESERVE STRUCTURE**: PRESERVE the job title, company, duration, and location EXACTLY as provided
+   - ONLY optimize the bullet points
+   - Keep all other structured data unchanged
 
 CRITICAL RULES:
-- Keep ALL ${structuredData.experience.length} jobs
+- Keep ALL ${structuredData.experience.length} jobs (don't skip any)
 - Do NOT change job titles, company names, durations, or locations
-- ONLY optimize the bullet points
-- Each job MUST have EXACTLY 2 bullets
-- Make bullets highly relevant to the job description
-- Use existing bullets as a base but enhance them with keywords and metrics
+- ONLY optimize the bullet points (keep all other structured data unchanged)
+- Each bullet MUST be optimized to match the job description requirements
+- Make bullets read like they were written specifically for THIS job
+- Prioritize bullets that directly address job requirements over generic achievements
 
-Return ONLY valid JSON array:
+Return ONLY valid JSON array (no markdown, no explanations):
 [
   {
-    "title": "...",
-    "company": "...",
-    "duration": "...",
-    "location": "...",
-    "bullets": ["Optimized bullet 1 with keywords and metrics", "Optimized bullet 2 with keywords and metrics"]
+    "title": "Exact job title from input",
+    "company": "Exact company name from input",
+    "duration": "Exact duration from input",
+    "location": "Exact location from input (or empty string if not provided)",
+    "bullets": ["Complete optimized bullet 1 with keywords, metrics, and impact", "Complete optimized bullet 2 with keywords, metrics, and impact", "Complete optimized bullet 3 (if needed)", "Complete optimized bullet 4 (if needed)"]
   },
   ...
-]`;
+]
+
+IMPORTANT:
+- Return ALL ${structuredData.experience.length} jobs
+- Each bullet must be a COMPLETE sentence (not cut off)
+- Each bullet should incorporate job keywords and show relevance
+- Preserve all key achievements from original bullets`;
 
     try {
       const response = await callGemini(optimizePrompt, config);
@@ -451,7 +492,30 @@ Return ONLY valid JSON array:
       const optimized = JSON.parse(cleaned);
       
       if (Array.isArray(optimized) && optimized.length > 0) {
+        // Validate that we got all jobs back
+        if (optimized.length !== structuredData.experience.length) {
+          console.warn(`[Focused Tailoring] ⚠️ AI returned ${optimized.length} jobs but expected ${structuredData.experience.length}`);
+        }
+        
+        // Validate bullets are complete (not cut off)
+        optimized.forEach((exp: any, idx: number) => {
+          if (!exp.bullets || !Array.isArray(exp.bullets) || exp.bullets.length === 0) {
+            console.warn(`[Focused Tailoring] ⚠️ Job ${idx + 1} (${exp.title}) has no bullets - using original`);
+            exp.bullets = structuredData.experience[idx]?.bullets || [];
+          } else {
+            // Check for incomplete bullets (ending mid-sentence)
+            exp.bullets = exp.bullets.map((bullet: string) => {
+              if (bullet && bullet.length > 0 && !bullet.match(/[.!?]$/)) {
+                // Bullet doesn't end with punctuation - might be cut off
+                console.warn(`[Focused Tailoring] ⚠️ Bullet might be incomplete: "${bullet.substring(0, 50)}..."`);
+              }
+              return bullet;
+            });
+          }
+        });
+        
         console.log(`[Focused Tailoring] ✅ Experience optimized: ${optimized.length} jobs`);
+        console.log(`[Focused Tailoring] Bullet counts:`, optimized.map((exp: any) => `${exp.title}: ${exp.bullets?.length || 0} bullets`));
         return optimized;
       }
     } catch (error: any) {

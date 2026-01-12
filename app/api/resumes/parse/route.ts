@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { getAIConfig } from "@/lib/config/ai";
+import { callAIWithFallback } from "@/lib/ai/fallback";
 
 // Note: Install these packages: npm install pdf-parse mammoth
 // For PDF: npm install pdf-parse
@@ -182,6 +184,10 @@ export async function POST(request: NextRequest) {
       console.warn(`[Parse] Structured data keys:`, Object.keys(structuredData));
       console.warn(`[Parse] Experience array:`, structuredData.experience);
     }
+
+    // Note: Experience bullets will be optimized during CV tailoring (with job description)
+    // We store the original bullets here, and they will be optimized in tailorResumeWithFocusedPrompts
+    // when the user generates a CV with a job description
 
     // Step 4: Get user's profile to ensure it exists
     const { data: profile, error: profileError } = await supabase
@@ -1831,3 +1837,118 @@ function generateResumeName(structured: any, rawText: string): string {
   return `Resume - ${month} ${year}`;
 }
 
+/**
+ * NOTE: Experience bullets optimization is handled in lib/ai/tailor-focused.ts
+ * during CV tailoring (when job description is available).
+ * This function is kept for reference but not used during parsing.
+ * 
+ * Optimize experience bullets using AI (similar to career objective generation)
+ * Takes parsed experience entries and optimizes their bullet points
+ */
+async function optimizeExperienceBullets_UNUSED(
+  experience: Array<{
+    company: string;
+    title: string;
+    duration?: string;
+    location?: string;
+    bullets?: string[];
+  }>,
+  rawText: string
+): Promise<Array<{
+  company: string;
+  title: string;
+  duration?: string;
+  location?: string;
+  bullets: string[];
+}>> {
+  try {
+    const config = getAIConfig();
+    
+    // Build experience text for prompt
+    const experienceText = experience.map((exp, idx) => {
+      const bullets = exp.bullets || [];
+      return `\nJOB ${idx + 1}:\nTitle: ${exp.title}\nCompany: ${exp.company}\nDuration: ${exp.duration || "Not specified"}\nLocation: ${exp.location || ""}\nOriginal Bullets:\n${bullets.map((b, i) => `  ${i + 1}. ${b}`).join("\n")}`;
+    }).join("\n");
+
+    const prompt = `You are an expert resume writer. Optimize work experience bullet points to be more impactful, professional, and ATS-friendly.
+
+CANDIDATE'S RESUME CONTEXT:
+${rawText.substring(0, 3000)}${rawText.length > 3000 ? "\n[... truncated ...]" : ""}
+
+EXISTING WORK EXPERIENCE TO OPTIMIZE:
+${experienceText}
+
+TASK:
+Optimize EACH job's bullet points to:
+1. Start with strong action verbs (Led, Developed, Architected, Optimized, Implemented, Delivered, etc.)
+2. Add quantifiable metrics where possible (%, $, team size, time saved, users, transactions, etc.)
+3. Show IMPACT and RESULTS (what was achieved, improved, or delivered)
+4. Be concise but descriptive (aim for 1-2 lines per bullet, max 150 characters)
+5. Use professional, ATS-friendly language
+6. PRESERVE the job title, company, duration, and location EXACTLY as provided
+7. Keep ALL original information - only enhance and optimize the wording
+8. Ensure bullets are complete sentences (not cut off mid-sentence)
+
+CRITICAL RULES:
+- Keep ALL ${experience.length} jobs
+- Do NOT change job titles, company names, durations, or locations
+- ONLY optimize the bullet points
+- Each job should have 2-4 optimized bullets (merge related bullets if needed)
+- Make bullets more impactful and professional than originals
+- Use existing bullets as a base but enhance them significantly
+- Ensure bullets are NOT cut off - each bullet must be a complete, meaningful statement
+- Remove any incomplete or fragmented bullets
+
+Return ONLY valid JSON array (no markdown, no explanations):
+[
+  {
+    "title": "Exact job title from input",
+    "company": "Exact company name from input",
+    "duration": "Exact duration from input",
+    "location": "Exact location from input (or empty string if not provided)",
+    "bullets": ["Optimized bullet 1 with metrics and impact", "Optimized bullet 2 with metrics and impact", ...]
+  },
+  ...
+]`;
+
+    console.log(`[Parse] 🤖 Calling AI to optimize ${experience.length} experience entries...`);
+    
+    const response = await callAIWithFallback(prompt, {
+      preferredProvider: config.provider === "gemini" ? "gemini" : undefined,
+    });
+    
+    // Clean JSON response
+    let cleaned = response.text.trim();
+    if (cleaned.startsWith("```json")) {
+      cleaned = cleaned.replace(/```json\n?/g, "").replace(/```\n?$/g, "");
+    } else if (cleaned.startsWith("```")) {
+      cleaned = cleaned.replace(/```\n?/g, "");
+    }
+    
+    // Remove any markdown formatting
+    cleaned = cleaned.replace(/^```/gm, "").replace(/```$/gm, "");
+    
+    const optimized = JSON.parse(cleaned);
+    
+    if (Array.isArray(optimized) && optimized.length > 0) {
+      // Ensure all required fields are present
+      return optimized.map((exp: any, idx: number) => ({
+        title: exp.title || experience[idx]?.title || "",
+        company: exp.company || experience[idx]?.company || "",
+        duration: exp.duration || experience[idx]?.duration || "",
+        location: exp.location || experience[idx]?.location || "",
+        bullets: Array.isArray(exp.bullets) && exp.bullets.length > 0 
+          ? exp.bullets.filter((b: string) => b && b.trim().length > 10) // Filter out empty or too short bullets
+          : (experience[idx]?.bullets || []), // Fallback to original if optimization failed
+      }));
+    }
+    
+    // If optimization fails, return original
+    console.log(`[Parse] ⚠️ AI optimization returned invalid format, using original bullets`);
+    return experience.map(exp => ({ ...exp, bullets: exp.bullets || [], }));
+  } catch (error: any) {
+    console.error(`[Parse] Error optimizing experience bullets:`, error.message);
+    // Return original experience if optimization fails
+    return experience.map(exp => ({ ...exp, bullets: exp.bullets || [], }));
+  }
+}
