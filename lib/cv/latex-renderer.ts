@@ -223,8 +223,24 @@ function renderATSTemplate(template: string, data: CVData): string {
   template = template.replace(/\{\{DEEP_LEARNING_FRAMEWORKS\}\}/g, escapeLatex(frameworks));
   template = template.replace(/\{\{LIBRARIES_TOOLS\}\}/g, escapeLatex(tools));
   
-  // Projects
-  const projectsLatex = data.projects.map(project => {
+  // Projects - filter out education entries
+  const educationIndicatorsATS = [
+    /^(Bachelor|Master|PhD|Doctorate|B\.?S\.?|M\.?S\.?|B\.?A\.?|M\.?A\.?|B\.?E\.?|M\.?E\.?)/i,
+    /University|College|School|Institute|Academy/i,
+    /Degree|Diploma|Certificate|Graduation/i,
+    /GPA|Grade|Honors|Dean's List|Cum Laude/i,
+    /Coursework|Courses|Relevant Coursework/i,
+    /MeritScholar|BatchGoldMedalist/i,
+  ];
+  
+  const filteredProjectsATS = data.projects.filter(project => {
+    const projName = (project.name || '').toLowerCase();
+    const projDesc = (project.description || '').toLowerCase();
+    const projText = `${projName} ${projDesc}`.toLowerCase();
+    return !educationIndicatorsATS.some(pattern => pattern.test(projText));
+  });
+  
+  const projectsLatex = filteredProjectsATS.map(project => {
     const tech = project.technologies?.join(', ') || '';
     const bullets = project.bullets?.map(b => 
       `\\resumeItem{\\textbullet\\ ${escapeLatex(b)}}`
@@ -256,9 +272,13 @@ function renderATSTemplate(template: string, data: CVData): string {
   
   // Education
   const educationLatex = data.education.map(edu => {
+    const degree = fixMangledEducationText(edu.degree);
+    const institution = fixMangledEducationText(edu.institution);
+    const location = fixMangledEducationText(edu.location || '');
+    const duration = fixMangledEducationText(edu.duration);
     return `  \\resumeSubheading
-      {${escapeLatex(edu.institution)}}{${escapeLatex(edu.duration)}}
-      {${escapeLatex(edu.degree)}}{${escapeLatex(edu.location || '')}}`;
+      {${escapeLatex(institution)}}{${escapeLatex(duration)}}
+      {${escapeLatex(degree)}}{${escapeLatex(location)}}`;
   }).join('\n  ');
   template = template.replace(/\{\{EDUCATION\}\}/g, educationLatex || '');
   
@@ -274,27 +294,59 @@ function renderATSTemplate(template: string, data: CVData): string {
 /**
  * Render Entry-Level template sections
  */
+/**
+ * Fix mangled education text (add spaces where missing)
+ */
+function fixMangledEducationText(text: string): string {
+  if (!text || text.length === 0) return text;
+  
+  // Step 1: Split camelCase words (e.g., "MasterofScience" -> "Master of Science")
+  let fixed = text.replace(/([a-z])([A-Z])/g, '$1 $2');
+  
+  // Step 2: Add space before opening parentheses if missing
+  fixed = fixed.replace(/([a-zA-Z0-9])(\()/g, '$1 $2');
+  
+  // Step 3: Add space after closing parentheses if missing
+  fixed = fixed.replace(/(\))([A-Za-z])/g, '$1 $2');
+  
+  // Step 4: Add space before commas if missing
+  fixed = fixed.replace(/([a-zA-Z0-9])(,)([A-Za-z])/g, '$1$2 $3');
+  
+  // Step 5: Fix common degree patterns
+  fixed = fixed.replace(/\bMasterof\s*Science/gi, 'Master of Science');
+  fixed = fixed.replace(/\bMasterof\s*Arts/gi, 'Master of Arts');
+  fixed = fixed.replace(/\bBachelorof\s*Science/gi, 'Bachelor of Science');
+  fixed = fixed.replace(/\bBachelorof\s*Arts/gi, 'Bachelor of Arts');
+  fixed = fixed.replace(/\bBachelorof\s*Engineering/gi, 'Bachelor of Engineering');
+  
+  // Step 6: Fix common honor patterns
+  fixed = fixed.replace(/\b(MeritScholar|Merit\s*Scholar)/gi, 'Merit Scholar');
+  fixed = fixed.replace(/\b(BatchGoldMedalist|Batch\s*Gold\s*Medalist)/gi, 'Batch Gold Medalist');
+  
+  // Step 7: Fix location patterns
+  fixed = fixed.replace(/([A-Z][a-z]+),([A-Z][a-z]+)/g, '$1, $2');
+  
+  // Step 8: Clean up multiple spaces
+  fixed = fixed.replace(/\s+/g, ' ').trim();
+  
+  return fixed;
+}
+
 function renderEntryLevelTemplate(template: string, data: CVData): string {
   // Education
   const educationLatex = data.education.map(edu => {
-    const gpa = edu.gpa ? `, GPA: ${edu.gpa}` : '';
-    return `\\subsection*{${escapeLatex(edu.degree)}${gpa}, {\\normalsize \\normalfont ${escapeLatex(edu.institution)}} \\hfill ${escapeLatex(edu.duration)}} 
+    const degree = fixMangledEducationText(edu.degree);
+    const institution = fixMangledEducationText(edu.institution);
+    const location = fixMangledEducationText(edu.location || '');
+    const duration = fixMangledEducationText(edu.duration);
+    const gpa = edu.gpa ? `, GPA: ${fixMangledEducationText(edu.gpa)}` : '';
+    return `\\subsection*{${escapeLatex(degree)}${gpa}, {\\normalsize \\normalfont ${escapeLatex(institution)}} \\hfill ${escapeLatex(duration)}} 
 \\vspace{0.1cm}`;
   }).join('\n');
   template = template.replace(/\{\{EDUCATION\}\}/g, educationLatex || '');
   
-  // Projects
-  const projectsLatex = data.projects.map(project => {
-    const bullets = project.bullets?.map(b => 
-      `        \\item ${escapeLatex(b)}`
-    ).join('\n        ') || '';
-    
-    return `\\subsection*{${escapeLatex(project.name)}${project.duration ? `, {\\normalsize\\normalfont ${escapeLatex(project.description || '')}} \\hfill ${escapeLatex(project.duration)}` : ''}} 
-    \\begin{zitemize}
-        ${bullets}
-    \\end{zitemize}`;
-  }).join('\n\n');
-  template = template.replace(/\{\{PROJECTS\}\}/g, projectsLatex || '');
+  // Projects section removed - no longer included in CVs
+  template = template.replace(/\{\{PROJECTS\}\}/g, '');
   
   // Experience
   const experienceLatex = data.experience.map(exp => {
@@ -339,7 +391,11 @@ function renderModernCVTemplate(template: string, data: CVData): string {
   
   // Education
   const educationLatex = data.education.map(edu => {
-    return `\\educationHeading{${escapeLatex(edu.institution)}}{${escapeLatex(edu.degree)}}{${escapeLatex(edu.location || '')}}{${escapeLatex(edu.duration)}}
+    const degree = fixMangledEducationText(edu.degree);
+    const institution = fixMangledEducationText(edu.institution);
+    const location = fixMangledEducationText(edu.location || '');
+    const duration = fixMangledEducationText(edu.duration);
+    return `\\educationHeading{${escapeLatex(institution)}}{${escapeLatex(degree)}}{${escapeLatex(location)}}{${escapeLatex(duration)}}
 \\sectionsep`;
   }).join('\n');
   template = template.replace(/\{\{EDUCATION\}\}/g, educationLatex || '');
@@ -358,25 +414,25 @@ function renderModernCVTemplate(template: string, data: CVData): string {
   }).join('\n\n');
   template = template.replace(/\{\{EXPERIENCE\}\}/g, experienceLatex || '');
   
-  // Projects
-  const projectsLatex = data.projects.map(project => {
-    const tech = project.technologies?.join(', ') || '';
-    const bullets = project.bullets?.map(b => 
-      `    \\item ${escapeLatex(b)}`
-    ).join('\n    ') || '';
-    
-    if (bullets) {
-      return `\\projectHeading{${escapeLatex(project.name)}}{${escapeLatex(project.description || '')}}{${escapeLatex(tech)}}
-\\begin{bullets}
-    ${bullets}
-\\end{bullets}
-\\sectionsep`;
-    } else {
-      return `\\projectHeading{${escapeLatex(project.name)}}{${escapeLatex(project.description || '')}}{${escapeLatex(tech)}}
-\\sectionsep`;
-    }
-  }).join('\n\n');
-  template = template.replace(/\{\{PROJECTS\}\}/g, projectsLatex || '');
+  // Projects - filter out education entries
+  const educationIndicators2 = [
+    /^(Bachelor|Master|PhD|Doctorate|B\.?S\.?|M\.?S\.?|B\.?A\.?|M\.?A\.?|B\.?E\.?|M\.?E\.?)/i,
+    /University|College|School|Institute|Academy/i,
+    /Degree|Diploma|Certificate|Graduation/i,
+    /GPA|Grade|Honors|Dean's List|Cum Laude/i,
+    /Coursework|Courses|Relevant Coursework/i,
+    /MeritScholar|BatchGoldMedalist/i,
+  ];
+  
+  const filteredProjects2 = data.projects.filter(project => {
+    const projName = (project.name || '').toLowerCase();
+    const projDesc = (project.description || '').toLowerCase();
+    const projText = `${projName} ${projDesc}`.toLowerCase();
+    return !educationIndicators2.some(pattern => pattern.test(projText));
+  });
+  
+  // Projects section removed - no longer included in CVs
+  template = template.replace(/\{\{PROJECTS\}\}/g, '');
   
   // Skills
   const skillsLatex = data.skills.map(skill => {
@@ -395,10 +451,15 @@ function renderModernCVTemplate(template: string, data: CVData): string {
 function renderProfessionalResumeTemplate(template: string, data: CVData): string {
   // Education
   const educationLatex = data.education.map(edu => {
+    const degree = fixMangledEducationText(edu.degree);
+    const institution = fixMangledEducationText(edu.institution);
+    const location = fixMangledEducationText(edu.location || '');
+    const duration = fixMangledEducationText(edu.duration);
+    const gpa = edu.gpa ? `, GPA: ${fixMangledEducationText(edu.gpa)}` : '';
     return `  \\resumeSubHeadingListStart
     \\resumeSubheading
-      {${escapeLatex(edu.institution)}}{${escapeLatex(edu.location || '')}}
-      {${escapeLatex(edu.degree)}${edu.gpa ? `, GPA: ${edu.gpa}` : ''}}{${escapeLatex(edu.duration)}}
+      {${escapeLatex(institution)}}{${escapeLatex(location)}}
+      {${escapeLatex(degree)}${gpa}}{${escapeLatex(duration)}}
   \\resumeSubHeadingListEnd`;
   }).join('\n\n');
   template = template.replace(/\{\{EDUCATION\}\}/g, educationLatex || '');
@@ -420,20 +481,25 @@ function renderProfessionalResumeTemplate(template: string, data: CVData): strin
   }).join('\n\n');
   template = template.replace(/\{\{EXPERIENCE\}\}/g, experienceLatex || '');
   
-  // Projects
-  const projectsLatex = data.projects.map(project => {
-    const tech = project.technologies?.join(', ') || '';
-    const bullets = project.bullets?.map(b => 
-      `            \\resumeItem{${escapeLatex(b)}}`
-    ).join('\n') || '';
-    
-    return `    \\resumeSubHeadingListStart
-      \\resumeProjectHeading
-          {\\textbf{${escapeLatex(project.name)}} $|$ \\emph{${escapeLatex(tech)}}}{${escapeLatex(project.duration || '')}}
-          ${bullets ? `\\resumeItemListStart\n            ${bullets}\n          \\resumeItemListEnd` : ''}
-    \\resumeSubHeadingListEnd`;
-  }).join('\n\n');
-  template = template.replace(/\{\{PROJECTS\}\}/g, projectsLatex || '');
+  // Projects - filter out education entries
+  const educationIndicatorsPro = [
+    /^(Bachelor|Master|PhD|Doctorate|B\.?S\.?|M\.?S\.?|B\.?A\.?|M\.?A\.?|B\.?E\.?|M\.?E\.?)/i,
+    /University|College|School|Institute|Academy/i,
+    /Degree|Diploma|Certificate|Graduation/i,
+    /GPA|Grade|Honors|Dean's List|Cum Laude/i,
+    /Coursework|Courses|Relevant Coursework/i,
+    /MeritScholar|BatchGoldMedalist/i,
+  ];
+  
+  const filteredProjectsPro = data.projects.filter(project => {
+    const projName = (project.name || '').toLowerCase();
+    const projDesc = (project.description || '').toLowerCase();
+    const projText = `${projName} ${projDesc}`.toLowerCase();
+    return !educationIndicatorsPro.some(pattern => pattern.test(projText));
+  });
+  
+  // Projects section removed - no longer included in CVs
+  template = template.replace(/\{\{PROJECTS\}\}/g, '');
   
   // Skills
   const skillsLatex = data.skills.map(skill => {
@@ -452,10 +518,15 @@ function renderProfessionalResumeTemplate(template: string, data: CVData): strin
 function renderSeniorLevelTemplate(template: string, data: CVData): string {
   // Education
   const educationLatex = data.education.map(edu => {
+    const degree = fixMangledEducationText(edu.degree);
+    const institution = fixMangledEducationText(edu.institution);
+    const location = fixMangledEducationText(edu.location || '');
+    const duration = fixMangledEducationText(edu.duration);
+    const gpa = edu.gpa ? `;  CGPA: ${fixMangledEducationText(edu.gpa)}` : '';
     return `  \\resumeSubHeadingListStart
     \\resumeSubheading
-      {${escapeLatex(edu.institution)}}{${escapeLatex(edu.location || '')}}
-      {${escapeLatex(edu.degree)}${edu.gpa ? `;  CGPA: ${edu.gpa}` : ''}}{${escapeLatex(edu.duration)}}
+      {${escapeLatex(institution)}}{${escapeLatex(location)}}
+      {${escapeLatex(degree)}${gpa}}{${escapeLatex(duration)}}
   \\resumeSubHeadingListEnd`;
   }).join('\n\n');
   template = template.replace(/\{\{EDUCATION\}\}/g, educationLatex || '');
@@ -477,13 +548,8 @@ function renderSeniorLevelTemplate(template: string, data: CVData): string {
   }).join('\n\n');
   template = template.replace(/\{\{EXPERIENCE\}\}/g, experienceLatex || '');
   
-  // Projects
-  const projectsLatex = data.projects.map(project => {
-    return `    \\resumeSubItem{${escapeLatex(project.name)}${project.duration ? ` (${escapeLatex(project.duration)})` : ''}}
-      {${escapeLatex(project.description || project.bullets?.join('. ') || '')}}`;
-  }).join('\n');
-  template = template.replace(/\{\{PROJECTS\}\}/g, 
-    `  \\resumeSubHeadingListStart\n${projectsLatex}\n  \\resumeSubHeadingListEnd` || '');
+  // Projects section removed - no longer included in CVs
+  template = template.replace(/\{\{PROJECTS\}\}/g, '');
   
   // Achievements
   let achievementsLatex = '';

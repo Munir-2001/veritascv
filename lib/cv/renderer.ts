@@ -67,18 +67,27 @@ export function prepareCVSections(
     });
   }
 
-  // Education section (FIXED ORDER: After About Me/Summary)
+  // Education section (FIXED ORDER: After About Me/Summary) - MANDATORY
+  // Always include education section if data exists in structured data
   if (structured.education && structured.education.length > 0) {
-    console.log(`[CV Renderer] ✅ Adding education section (${structured.education.length} entries)`);
+    console.log(`[CV Renderer] ✅ Adding MANDATORY education section (${structured.education.length} entries)`);
     sections.push({
       type: "education",
       title: "Education",
       content: structured.education,
-      importance: strategy.emphasize.includes("education") ? "critical" : "important",
-      render: true,
+      importance: "critical", // Always critical - must be shown
+      render: true, // Always render
     });
   } else {
-    console.log(`[CV Renderer] ⚠️ Skipping education - no data (${structured.education?.length || 0} entries)`);
+    console.log(`[CV Renderer] ⚠️ WARNING: No education data found in structured data (${structured.education?.length || 0} entries)`);
+    // Still try to add empty section to ensure it's in the structure
+    sections.push({
+      type: "education",
+      title: "Education",
+      content: [],
+      importance: "critical",
+      render: false, // Don't render if empty
+    });
   }
 
   // Experience section (FIXED ORDER: After Education)
@@ -95,20 +104,8 @@ export function prepareCVSections(
     console.log(`[CV Renderer] ⚠️ Skipping experience - no data (${structured.experience?.length || 0} jobs)`);
   }
 
-  // Projects section (FIXED ORDER: After Experience)
-  if (structured.projects && structured.projects.length > 0) {
-    const importance = strategy.projectsImportance;
-    console.log(`[CV Renderer] ✅ Adding projects section (${structured.projects.length} entries, importance: ${importance})`);
-    sections.push({
-      type: "projects",
-      title: "Projects",
-      content: structured.projects,
-      importance,
-      render: importance !== "skip",
-    });
-  } else {
-    console.log(`[CV Renderer] ⚠️ Skipping projects - no data (${structured.projects?.length || 0} entries)`);
-  }
+  // Projects section REMOVED - no longer included in CVs
+  console.log(`[CV Renderer] ⚠️ Projects section disabled - not including in CV`);
 
   // Skills section (FIXED ORDER: After Projects)
   if (structured.skills && structured.skills.length > 0) {
@@ -153,14 +150,14 @@ export function prepareCVSections(
     console.log(`[CV Renderer] ⚠️ Achievements emphasized but no data (${structured.achievements?.length || 0} achievements)`);
   }
 
-  // FIXED ORDER: Contact → About Me/Summary → Education → Experience → Projects → Skills → Certifications → Achievements
+  // FIXED ORDER: Contact → About Me/Summary → Education → Experience → Skills → Certifications → Achievements
+  // Projects removed - no longer included in CVs
   const fixedOrder = [
     "contact",
     "about_me",
     "summary",
     "education",
     "experience",
-    "projects",
     "skills",
     "certifications",
     "achievements",

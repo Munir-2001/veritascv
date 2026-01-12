@@ -647,6 +647,8 @@ function parseExperienceSection(sectionContent: string, fullText: string): any[]
       
       console.log(`[Parse] 🔍 [FORMAT 1] Checking companyDateLineMatch: "${companyName}" with dates "${startDate} - ${endDate}"`);
       
+
+
       // Remove trailing month names that might have been captured (e.g., "Techlogix AdalfiFeb" -> "Techlogix Adalfi")
       const monthNames = ['Aug', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Sep', 'Oct', 'Nov', 'Dec',
                          'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 
@@ -1107,16 +1109,71 @@ function parseProjectsSection(sectionContent: string, fullText: string): any[] {
   let currentDescription: string[] = [];
   let currentTechnologies: string[] = [];
   
+  // Education indicators - COMPREHENSIVE list to exclude these from projects
+  const educationIndicators = [
+    /^(Bachelor|Master|PhD|Doctorate|B\.?S\.?|M\.?S\.?|B\.?A\.?|M\.?A\.?|B\.?E\.?|M\.?E\.?)/i,
+    /University|College|School|Institute|Academy/i,
+    /Degree|Diploma|Certificate|Graduation/i,
+    /GPA|Grade|Honors|Dean's List|Cum Laude/i,
+    /Coursework|Courses|Relevant Coursework/i,
+    /MeritScholar|BatchGoldMedalist|Merit Scholar|Batch Gold Medalist/i,
+    /Bachelorof|Masterof|Bachelor of|Master of/i,
+  ];
+  
+  // Check if the ENTIRE section content is education-related (early exit)
+  const sectionText = sectionContent.toLowerCase();
+  const isEntireSectionEducation = educationIndicators.some(pattern => pattern.test(sectionText));
+  if (isEntireSectionEducation) {
+    console.log(`[Parse] ⚠️ Entire Projects section appears to be education - skipping completely`);
+    return [];
+  }
+  
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     
     if (!line || line.length === 0) continue;
     
-    // Project name: capitalized, not a bullet, not "Technologies:", not a section header
+    // Check if this line looks like education (exclude from projects)
+    const isEducation = educationIndicators.some(pattern => pattern.test(line));
+    if (isEducation) {
+      console.log(`[Parse] ⚠️ Skipping education entry in Projects section: "${line}"`);
+      // If we have a current project, save it before skipping
+      if (currentProject) {
+        currentProject.description = currentDescription.join(" ");
+        currentProject.technologies = currentTechnologies;
+        if (currentDescription.length > 0) {
+          currentProject.bullets = currentDescription.map(d => d.replace(/^[•\-\*]\s*/, "").trim());
+        }
+        projects.push(currentProject);
+        currentProject = null;
+        currentDescription = [];
+        currentTechnologies = [];
+      }
+      continue; // Skip education entries completely
+    }
+    
+    // Also check if current project being built looks like education
+    if (currentProject) {
+      const projectText = `${currentProject.name} ${currentDescription.join(' ')}`.toLowerCase();
+      const projectIsEducation = educationIndicators.some(pattern => pattern.test(projectText));
+      if (projectIsEducation) {
+        console.log(`[Parse] ⚠️ Current project "${currentProject.name}" appears to be education - discarding`);
+        currentProject = null;
+        currentDescription = [];
+        currentTechnologies = [];
+        continue;
+      }
+    }
+    
+    // Project name: capitalized, not a bullet, not "Technologies:", not a section header, NOT education
+    // Double-check education exclusion
+    const isEducationLine = educationIndicators.some(pattern => pattern.test(line));
     const isProjectName = /^[A-Z][A-Za-z0-9\s&]+$/.test(line) && 
                          !line.match(/^Technologies?:/i) &&
                          !line.match(/^[•\-\*]/) &&
                          !line.match(/^(PROJECTS|EDUCATION|SKILLS|EXPERIENCE|CERTIFICATIONS)$/i) &&
+                         !isEducation && // Explicitly exclude education
+                         !isEducationLine && // Double-check education exclusion
                          line.length > 5 && line.length < 100;
     
     // Technologies line
@@ -1168,19 +1225,83 @@ function parseProjectsSection(sectionContent: string, fullText: string): any[] {
     }
   }
   
-  // Don't forget the last project
+  // Don't forget the last project - but check if it's education first
   if (currentProject) {
-    currentProject.description = currentDescription.join(" ");
-    currentProject.technologies = currentTechnologies;
-    // Convert description array to bullets if it looks like bullet points
-    if (currentDescription.length > 0) {
-      currentProject.bullets = currentDescription.map(d => d.replace(/^[•\-\*]\s*/, "").trim());
+    const projectText = `${currentProject.name} ${currentDescription.join(' ')}`.toLowerCase();
+    const projectIsEducation = educationIndicators.some(pattern => pattern.test(projectText));
+    
+    if (!projectIsEducation) {
+      currentProject.description = currentDescription.join(" ");
+      currentProject.technologies = currentTechnologies;
+      // Convert description array to bullets if it looks like bullet points
+      if (currentDescription.length > 0) {
+        currentProject.bullets = currentDescription.map(d => d.replace(/^[•\-\*]\s*/, "").trim());
+      }
+      projects.push(currentProject);
+    } else {
+      console.log(`[Parse] ⚠️ Final project "${currentProject.name}" appears to be education - discarding`);
     }
-    projects.push(currentProject);
   }
   
-  console.log(`[Parse] Extracted ${projects.length} projects from Projects section`);
-  return projects;
+  // Final filter: Remove any projects that look like education
+  const filteredProjects = projects.filter((project: any) => {
+    const projName = (project.name || '').toLowerCase();
+    const projDesc = (project.description || '').toLowerCase();
+    const projBullets = (project.bullets || []).join(' ').toLowerCase();
+    const projText = `${projName} ${projDesc} ${projBullets}`;
+    
+    const isEducation = educationIndicators.some(pattern => pattern.test(projText));
+    if (isEducation) {
+      console.log(`[Parse] ⚠️ Filtering out education entry from final projects list: "${project.name}"`);
+      return false;
+    }
+    return true;
+  });
+  
+  console.log(`[Parse] Extracted ${filteredProjects.length} valid projects from Projects section (${projects.length - filteredProjects.length} education entries filtered out)`);
+  return filteredProjects;
+}
+
+/**
+ * Fix mangled education text (add spaces where missing)
+ * Handles cases like "MasterofScienceinComputerScience(MeritScholar)Trento,Italy"
+ * Converts to: "Master of Science in Computer Science (Merit Scholar) Trento, Italy"
+ */
+function fixMangledEducationText(text: string): string {
+  if (!text || text.length === 0) return text;
+  
+  // Step 1: Split camelCase words (e.g., "MasterofScience" -> "Master of Science")
+  // Pattern: lowercase letter followed by uppercase letter
+  let fixed = text.replace(/([a-z])([A-Z])/g, '$1 $2');
+  
+  // Step 2: Add space before opening parentheses if missing
+  fixed = fixed.replace(/([a-zA-Z0-9])(\()/g, '$1 $2');
+  
+  // Step 3: Add space after closing parentheses if missing
+  fixed = fixed.replace(/(\))([A-Za-z])/g, '$1 $2');
+  
+  // Step 4: Add space before commas if missing (but preserve comma-space pattern)
+  fixed = fixed.replace(/([a-zA-Z0-9])(,)([A-Za-z])/g, '$1$2 $3');
+  
+  // Step 5: Fix common degree patterns that might be mangled
+  // "MasterofScience" -> "Master of Science"
+  fixed = fixed.replace(/\bMasterof\s*Science/gi, 'Master of Science');
+  fixed = fixed.replace(/\bMasterof\s*Arts/gi, 'Master of Arts');
+  fixed = fixed.replace(/\bBachelorof\s*Science/gi, 'Bachelor of Science');
+  fixed = fixed.replace(/\bBachelorof\s*Arts/gi, 'Bachelor of Arts');
+  fixed = fixed.replace(/\bBachelorof\s*Engineering/gi, 'Bachelor of Engineering');
+  
+  // Step 6: Fix common honor patterns
+  fixed = fixed.replace(/\b(MeritScholar|Merit\s*Scholar)/gi, 'Merit Scholar');
+  fixed = fixed.replace(/\b(BatchGoldMedalist|Batch\s*Gold\s*Medalist)/gi, 'Batch Gold Medalist');
+  
+  // Step 7: Fix location patterns (City,Country -> City, Country)
+  fixed = fixed.replace(/([A-Z][a-z]+),([A-Z][a-z]+)/g, '$1, $2');
+  
+  // Step 8: Clean up multiple spaces
+  fixed = fixed.replace(/\s+/g, ' ').trim();
+  
+  return fixed;
 }
 
 /**
@@ -1196,14 +1317,20 @@ function parseEducationSection(sectionContent: string, fullText: string): any[] 
   let currentEdu: any = null;
   
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    let line = lines[i];
     
     if (!line || line.length === 0) continue;
+    
+    // Fix mangled text (add spaces where missing)
+    line = fixMangledEducationText(line);
     
     // Check if this is a degree name
     if (degreePattern.test(line)) {
       // Save previous education
       if (currentEdu) {
+        // Fix mangled text before saving
+        if (currentEdu.degree) currentEdu.degree = fixMangledEducationText(currentEdu.degree);
+        if (currentEdu.institution) currentEdu.institution = fixMangledEducationText(currentEdu.institution);
         education.push(currentEdu);
       }
       // Start new education
@@ -1217,21 +1344,24 @@ function parseEducationSection(sectionContent: string, fullText: string): any[] 
       // Check for institution + date/year
       const institutionMatch = line.match(/^([A-Z][A-Za-z0-9\s&.,-]+?)\s+((?:May|June|January|February|March|April|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|\d{4})/i);
       if (institutionMatch && !currentEdu.institution) {
-        currentEdu.institution = institutionMatch[1].trim();
+        currentEdu.institution = fixMangledEducationText(institutionMatch[1].trim());
         currentEdu.year = institutionMatch[2]?.trim() || "";
       } else if (line.match(/^Relevant\s+Coursework?:/i)) {
         // Extract coursework
         const courseworkText = line.replace(/^Relevant\s+Coursework?:\s*/i, "");
-        currentEdu.coursework = courseworkText.split(',').map(c => c.trim()).filter(c => c.length > 0);
+        currentEdu.coursework = courseworkText.split(',').map(c => fixMangledEducationText(c.trim())).filter(c => c.length > 0);
       } else if (!currentEdu.institution && line.length > 5) {
         // Assume this is institution if not set
-        currentEdu.institution = line;
+        currentEdu.institution = fixMangledEducationText(line);
       }
     }
   }
   
   // Don't forget the last education
   if (currentEdu) {
+    // Fix mangled text before saving
+    if (currentEdu.degree) currentEdu.degree = fixMangledEducationText(currentEdu.degree);
+    if (currentEdu.institution) currentEdu.institution = fixMangledEducationText(currentEdu.institution);
     education.push(currentEdu);
   }
   
@@ -1772,8 +1902,31 @@ function reclassifyExperienceAndProjects(
     }
   }
 
-  // Classify all project entries
+  // Classify all project entries - COMPLETELY FILTER OUT EDUCATION ENTRIES BEFORE PROCESSING
+  const educationIndicatorsReclass = [
+    /^(Bachelor|Master|PhD|Doctorate|B\.?S\.?|M\.?S\.?|B\.?A\.?|M\.?A\.?|B\.?E\.?|M\.?E\.?)/i,
+    /University|College|School|Institute|Academy/i,
+    /Degree|Diploma|Certificate|Graduation/i,
+    /GPA|Grade|Honors|Dean's List|Cum Laude/i,
+    /Coursework|Courses|Relevant Coursework/i,
+    /MeritScholar|BatchGoldMedalist|Merit Scholar|Batch Gold Medalist/i,
+    /Bachelorof|Masterof|Bachelor of|Master of/i,
+  ];
+  
   for (const proj of projects) {
+    // COMPREHENSIVE CHECK: Check if this is actually education (not a project)
+    // Check name, description, AND bullets
+    const projName = (proj.name || proj.title || '').toLowerCase();
+    const projDesc = (proj.description || '').toLowerCase();
+    const projBullets = (proj.bullets || []).join(' ').toLowerCase();
+    const projText = `${projName} ${projDesc} ${projBullets}`.toLowerCase();
+    
+    const isEducation = educationIndicatorsReclass.some(pattern => pattern.test(projText));
+    if (isEducation) {
+      console.log(`[Parse] ⚠️ COMPLETELY FILTERING OUT education entry from projects: "${proj.name || proj.title}"`);
+      continue; // Skip - this is education, not a project - DO NOT ADD TO FINAL PROJECTS
+    }
+    
     const classification = classifyEntry(proj, 'project');
     if (!classification.isExperience && classification.confidence >= 1) {
       finalProjects.push(proj);

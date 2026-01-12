@@ -13,7 +13,6 @@ import {
 import { getCVStrategy, type JobLevel, enhanceBulletPoint, extractMetrics } from "@/lib/cv/strategy";
 import { prepareCVSections, getSectionLimits } from "@/lib/cv/renderer";
 import { getCVStyle, getToneInstructions, getATSSectionTitle, type CVTemplate } from "@/lib/cv/styles";
-import { checkDailyQuota } from "@/lib/stripe/daily-quota";
 import { renderLatexTemplate } from "@/lib/cv/latex-renderer";
 import { compileLatexToPDF } from "@/lib/cv/latex-compiler";
 import { convertToCVData } from "@/lib/cv/data-converter";
@@ -27,7 +26,7 @@ import { convertToCVData } from "@/lib/cv/data-converter";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const {
+    let {
       resume_id,
       tailored_sections, // NEW: Structured sections from focused prompts
       tailored_text, // Fallback: JSON string
@@ -44,23 +43,7 @@ export async function POST(request: NextRequest) {
 
     console.log("[CV Generation] ==================== NEW REQUEST ====================");
 
-    // Check daily quota if user_id is provided
-    if (user_id) {
-      const quotaCheck = await checkDailyQuota(user_id);
-      if (!quotaCheck.allowed) {
-        return NextResponse.json(
-          {
-            error: "Daily CV generation limit reached",
-            message: quotaCheck.message,
-            remaining: quotaCheck.remaining,
-            dailyLimit: quotaCheck.dailyLimit,
-            resetTime: quotaCheck.resetTime?.toISOString(),
-          },
-          { status: 429 } // Too Many Requests
-        );
-      }
-      console.log(`[CV Generation] Quota check: ${quotaCheck.remaining}/${quotaCheck.dailyLimit} remaining`);
-    }
+    // Daily quota check removed - unlimited CV generation
     console.log("[CV Generation] Inputs:", {
       resume_id,
       job_title,
@@ -72,6 +55,74 @@ export async function POST(request: NextRequest) {
       has_structured: !!structured_data,
       has_raw: !!raw_text,
     });
+    
+    // CRITICAL: Always fetch education from database if resume_id is provided
+    // This ensures we never lose education data, even if it's missing from the request
+    let educationFromDatabase: any[] = [];
+    if (resume_id) {
+      try {
+        const { createClient } = await import("@supabase/supabase-js");
+        const supabase = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY!
+        );
+        
+        // Fetch from 'structured' column (correct column name)
+        const { data: resumeData, error: resumeError } = await supabase
+          .from("resumes")
+          .select("structured")
+          .eq("id", resume_id)
+          .single();
+        
+        console.log(`[CV Generation] Database query result:`, {
+          has_data: !!resumeData,
+          has_error: !!resumeError,
+          error: resumeError,
+          resume_id: resume_id,
+        });
+        
+        if (!resumeError && resumeData?.structured) {
+          const dbStructuredDataRaw = resumeData.structured;
+          
+          // Parse if it's a string, otherwise use as-is
+          const dbStructuredData = typeof dbStructuredDataRaw === 'string' 
+            ? JSON.parse(dbStructuredDataRaw) 
+            : dbStructuredDataRaw;
+          
+          console.log(`[CV Generation] ✅ Database structured data retrieved`);
+          console.log(`[CV Generation] Database structured data keys:`, Object.keys(dbStructuredData || {}));
+          console.log(`[CV Generation] Database education exists:`, !!dbStructuredData?.education);
+          console.log(`[CV Generation] Database education type:`, Array.isArray(dbStructuredData?.education) ? 'array' : typeof dbStructuredData?.education);
+          console.log(`[CV Generation] Database education count:`, dbStructuredData?.education?.length || 0);
+          
+          if (dbStructuredData?.education && Array.isArray(dbStructuredData.education) && dbStructuredData.education.length > 0) {
+            educationFromDatabase = dbStructuredData.education;
+            console.log(`[CV Generation] ✅✅✅ Fetched education from database (${educationFromDatabase.length} entries) ✅✅✅`);
+            console.log(`[CV Generation] Education entries (full):`, JSON.stringify(educationFromDatabase, null, 2));
+            
+            // Merge with existing structured_data
+            if (!structured_data) {
+              structured_data = {};
+            }
+            structured_data.education = educationFromDatabase;
+            console.log(`[CV Generation] structured_data.education after merge:`, structured_data.education?.length || 0);
+            console.log(`[CV Generation] structured_data.education value:`, structured_data.education);
+          } else {
+            console.log(`[CV Generation] ⚠️ No education found in database structured data`);
+            console.log(`[CV Generation] Database structured data education value:`, dbStructuredData?.education);
+            console.log(`[CV Generation] Database structured data education is array:`, Array.isArray(dbStructuredData?.education));
+          }
+        } else {
+          if (resumeError) {
+            console.warn(`[CV Generation] ⚠️ Error fetching resume from database:`, resumeError);
+          } else {
+            console.warn(`[CV Generation] ⚠️ No structured data found in database for resume_id: ${resume_id}`);
+          }
+        }
+      } catch (fetchError) {
+        console.warn("[CV Generation] ⚠️ Failed to fetch education from database:", fetchError);
+      }
+    }
 
     // Use tailored_sections if available (from focused prompts), otherwise fallback
     if (!tailored_sections && !tailored_text && !structured_data) {
@@ -114,6 +165,23 @@ export async function POST(request: NextRequest) {
         }
       }
       
+      // CRITICAL: Always preserve education from structured_data if tailored_sections doesn't have it
+      // Education is parsed from the resume and should always be included
+      const educationFromStructured = structured_data?.education || [];
+      const educationFromTailored = parsedTailoredSections.education || [];
+      // IMPORTANT: Prefer structured_data education (from database) over tailored education
+      // This ensures we use the original parsed education data
+      const finalEducation = educationFromStructured.length > 0 
+        ? educationFromStructured 
+        : (educationFromTailored.length > 0 ? educationFromTailored : []);
+      
+      console.log("[CV Generation] Education check (tailored_sections):", {
+        from_tailored: educationFromTailored.length,
+        from_structured: educationFromStructured.length,
+        final: finalEducation.length,
+        using_source: educationFromStructured.length > 0 ? 'structured_data' : (educationFromTailored.length > 0 ? 'tailored' : 'none'),
+      });
+      
       // Only include one: about_me (Career Objective) OR professional_summary
       finalData = {
         about_me: parsedTailoredSections.about_me || "", // Career Objective (if used)
@@ -121,7 +189,7 @@ export async function POST(request: NextRequest) {
         experience: parsedTailoredSections.experience || [],
         skills: skillsFormatted,
         projects: parsedTailoredSections.projects || [],
-        education: parsedTailoredSections.education || [],
+        education: finalEducation, // Use merged education (prefer structured_data)
         certifications: parsedTailoredSections.certifications || [],
       };
       
@@ -139,13 +207,24 @@ export async function POST(request: NextRequest) {
         const tailoredParsed = JSON.parse(tailored_text);
         console.log("[CV Generation] ✅ Parsed tailored_text as JSON");
         
+        // CRITICAL: Always preserve education from structured_data if tailored_text doesn't have it
+        const educationFromStructured = structured_data?.education || [];
+        const educationFromTailored = tailoredParsed.education || [];
+        const finalEducation = educationFromTailored.length > 0 ? educationFromTailored : educationFromStructured;
+        
+        console.log("[CV Generation] Education check (tailored_text):", {
+          from_tailored: educationFromTailored.length,
+          from_structured: educationFromStructured.length,
+          final: finalEducation.length,
+        });
+        
         finalData = {
           about_me: tailoredParsed.about_me,
           professional_summary: tailoredParsed.professional_summary,
           experience: tailoredParsed.experience || [],
           skills: tailoredParsed.technical_skills || tailoredParsed.skills || [],
           projects: tailoredParsed.projects || [],
-          education: tailoredParsed.education || [],
+          education: finalEducation, // Use merged education
           certifications: tailoredParsed.certifications || [],
         };
       } catch (e) {
@@ -158,6 +237,69 @@ export async function POST(request: NextRequest) {
       finalData = structured_data || {};
     }
     
+    // CRITICAL: Always ensure education is included from database or structured_data
+    // Education is MANDATORY - ALWAYS overwrite finalData.education if we have data from database/structured_data
+    const educationFromStructured = structured_data?.education || [];
+    
+    // Determine best source - prioritize database, then structured_data
+    // IGNORE finalData.education if it's empty - we want to use the source data
+    let finalEducationSource: any[] = [];
+    let educationSource = 'none';
+    
+    if (educationFromDatabase.length > 0) {
+      finalEducationSource = educationFromDatabase;
+      educationSource = 'database';
+    } else if (educationFromStructured.length > 0) {
+      finalEducationSource = educationFromStructured;
+      educationSource = 'structured_data';
+    }
+    
+    console.log("[CV Generation] ========== EDUCATION MERGE CHECK ==========");
+    console.log("[CV Generation] Database fetch result:", {
+      resume_id: resume_id,
+      fetched_count: educationFromDatabase.length,
+      entries: educationFromDatabase,
+    });
+    console.log("[CV Generation] Structured_data result:", {
+      count: educationFromStructured.length,
+      entries: educationFromStructured,
+      is_array: Array.isArray(educationFromStructured),
+    });
+    console.log("[CV Generation] FinalData before merge:", {
+      count: finalData.education?.length || 0,
+      value: finalData.education,
+      is_array: Array.isArray(finalData.education),
+    });
+    console.log("[CV Generation] Final source:", {
+      source: educationSource,
+      count: finalEducationSource.length,
+      entries: finalEducationSource,
+    });
+    
+    // ALWAYS set education if we found it from database or structured_data
+    // This overwrites any empty array in finalData
+    if (finalEducationSource.length > 0) {
+      console.log(`[CV Generation] ✅✅✅ SETTING EDUCATION (${finalEducationSource.length} entries) from ${educationSource} ✅✅✅`);
+      console.log(`[CV Generation] Education entries (full):`, JSON.stringify(finalEducationSource, null, 2));
+      finalData.education = finalEducationSource;
+      console.log(`[CV Generation] finalData.education AFTER setting:`, finalData.education?.length || 0);
+      console.log(`[CV Generation] finalData.education value:`, JSON.stringify(finalData.education, null, 2));
+    } else {
+      console.log(`[CV Generation] ❌❌❌ NO EDUCATION FOUND ANYWHERE ❌❌❌`);
+      console.log(`[CV Generation] Database:`, educationFromDatabase);
+      console.log(`[CV Generation] Structured_data:`, educationFromStructured);
+      console.log(`[CV Generation] FinalData:`, finalData.education);
+      console.log(`[CV Generation] structured_data full:`, JSON.stringify(structured_data, null, 2).substring(0, 1000));
+    }
+    console.log("[CV Generation] ===========================================");
+    
+    // FINAL VERIFICATION: Ensure education is in finalData before passing to generation functions
+    console.log("[CV Generation] FINAL VERIFICATION before CV generation:", {
+      finalData_has_education: !!(finalData.education && finalData.education.length > 0),
+      finalData_education_count: finalData.education?.length || 0,
+      finalData_education_sample: finalData.education?.slice(0, 1) || [],
+    });
+    
     console.log("[CV Generation] FINAL data counts:", {
       summary: finalData.professional_summary?.length > 0,
       experience: finalData.experience?.length || 0,
@@ -166,6 +308,21 @@ export async function POST(request: NextRequest) {
       education: finalData.education?.length || 0,
       certifications: finalData.certifications?.length || 0,
     });
+    
+    // Log education details for debugging
+    if (finalData.education && finalData.education.length > 0) {
+      console.log("[CV Generation] ✅ Education data present:", finalData.education.map((e: any) => ({
+        degree: e.degree || e.degree_name || 'N/A',
+        institution: e.institution || e.school || 'N/A',
+        hasData: !!(e.degree || e.degree_name || e.institution || e.school)
+      })));
+    } else {
+      console.log("[CV Generation] ❌ NO EDUCATION DATA - checking structured_data:", {
+        structured_data_education: structured_data?.education?.length || 0,
+        structured_data_keys: Object.keys(structured_data || {}),
+        structured_data_type: typeof structured_data,
+      });
+    }
 
     // Extract contact info from final data or raw text
     const contactInfo = extractContactInfo(finalData, raw_text);
@@ -185,6 +342,16 @@ export async function POST(request: NextRequest) {
     // Use professional_summary from finalData if available, otherwise use tailored_text
     const summaryText = finalData.professional_summary || tailored_text || "";
 
+    // FINAL CHECK: Verify education is in finalData before CV generation
+    console.log("[CV Generation] ========== PRE-GENERATION EDUCATION CHECK ==========");
+    console.log("[CV Generation] finalData.education:", {
+      exists: !!finalData.education,
+      is_array: Array.isArray(finalData.education),
+      count: finalData.education?.length || 0,
+      entries: finalData.education || [],
+    });
+    console.log("[CV Generation] ====================================================");
+
     // Map template name to LaTeX template ID
     const latexTemplateId = mapTemplateToLatexId(template, job_level as JobLevel);
     console.log(`[CV Generation] Using LaTeX template: ${latexTemplateId} (from ${template})`);
@@ -199,6 +366,12 @@ export async function POST(request: NextRequest) {
         job_title,
         job_description ? extractKeywordsForBolding(job_description) : undefined
       );
+      
+      // Log education in cvData
+      console.log("[CV Generation] cvData.education:", {
+        exists: !!cvData.education,
+        count: cvData.education?.length || 0,
+      });
 
       // Render LaTeX template
       const latexContent = renderLatexTemplate(latexTemplateId, cvData);
@@ -627,6 +800,19 @@ async function generatePDF(
     projects: structured.projects?.length || 0,
     certifications: structured.certifications?.length || 0,
   });
+  
+  // CRITICAL: Ensure education is present - if missing, log warning
+  if (!structured.education || structured.education.length === 0) {
+    console.log(`[PDF] ⚠️ WARNING: No education in structured parameter!`);
+    console.log(`[PDF] Structured keys:`, Object.keys(structured));
+    console.log(`[PDF] Structured.education value:`, structured.education);
+  } else {
+    console.log(`[PDF] ✅ Education present: ${structured.education.length} entries`);
+    console.log(`[PDF] Education entries:`, structured.education.map((e: any) => ({
+      degree: e.degree || e.degree_name || 'N/A',
+      institution: e.institution || e.school || 'N/A'
+    })));
+  }
 
   // Prepare sections using strategy
   const sections = prepareCVSections(structured, tailoredText, contactInfo, strategy);
@@ -767,21 +953,48 @@ async function generatePDF(
         break;
 
       case "education":
+        // Education section is MANDATORY - always render if data exists
+        if (!section.content || section.content.length === 0) {
+          console.log(`[PDF Generation] ⚠️ Education section is empty - skipping`);
+          break;
+        }
+        
         yPosition = addSectionHeader(section.title, yPosition);
-        const eduLimit = getSectionLimits(section.importance, "education");
+        // No limit on education entries - show all
+        const eduLimit = section.content.length; // Show all education entries
         for (const edu of section.content.slice(0, eduLimit)) {
           if (yPosition < 80) {
             page = pdfDoc.addPage([595, 842]);
             yPosition = 800;
           }
 
-          const degree = edu.degree || edu.degree_name || "Degree";
-          const institution = edu.institution || edu.school || "Institution";
-          let startDate = edu.start_date || "";
-          let endDate = edu.end_date || "";
-          const year = edu.year || edu.graduation_year || "";
-          const gpa = edu.gpa || "";
-          const honors = edu.honors || "";
+          // Fix mangled education text (add spaces where missing)
+          const fixMangledText = (text: string): string => {
+            if (!text) return text;
+            // Split camelCase: "MasterofScience" -> "Master of Science"
+            let fixed = text.replace(/([a-z])([A-Z])/g, '$1 $2');
+            // Add space before parentheses: "Science(Merit" -> "Science (Merit"
+            fixed = fixed.replace(/([a-zA-Z0-9])(\()/g, '$1 $2');
+            // Add space after parentheses: ")Trento" -> ") Trento"
+            fixed = fixed.replace(/(\))([A-Za-z])/g, '$1 $2');
+            // Add space before commas: "Italy,Karachi" -> "Italy, Karachi"
+            fixed = fixed.replace(/([a-zA-Z0-9])(,)([A-Za-z])/g, '$1$2 $3');
+            // Fix common patterns
+            fixed = fixed.replace(/\bMasterof\s*Science/gi, 'Master of Science');
+            fixed = fixed.replace(/\bBachelorof\s*Science/gi, 'Bachelor of Science');
+            fixed = fixed.replace(/\b(MeritScholar|Merit\s*Scholar)/gi, 'Merit Scholar');
+            fixed = fixed.replace(/\b(BatchGoldMedalist|Batch\s*Gold\s*Medalist)/gi, 'Batch Gold Medalist');
+            // Clean up multiple spaces
+            return fixed.replace(/\s+/g, ' ').trim();
+          };
+          
+          const degree = fixMangledText(edu.degree || edu.degree_name || "Degree");
+          const institution = fixMangledText(edu.institution || edu.school || "Institution");
+          let startDate = fixMangledText(edu.start_date || "");
+          let endDate = fixMangledText(edu.end_date || "");
+          const year = fixMangledText(edu.year || edu.graduation_year || "");
+          const gpa = fixMangledText(edu.gpa || "");
+          const honors = fixMangledText(edu.honors || "");
 
           // Clean up dates - remove phrases like "Expected to end in", "Graduated in", etc.
           startDate = startDate.replace(/^(expected to (start|begin) in|started in|from|since)\s+/i, "").trim();
@@ -825,47 +1038,8 @@ async function generatePDF(
         break;
 
       case "projects":
-        yPosition = addSectionHeader(section.title, yPosition);
-        const projLimit = getSectionLimits(section.importance, "projects");
-        for (const project of section.content.slice(0, projLimit)) {
-          if (yPosition < 80) {
-            page = pdfDoc.addPage([595, 842]);
-            yPosition = 800;
-          }
-          const projName = project.name || "Project";
-          yPosition = addText(projName, margin, yPosition, cvStyle.fontSize.jobTitle, true, cvStyle.colors.heading);
-          
-          // Use bullets if available, otherwise fallback to description
-          if (project.bullets && project.bullets.length > 0) {
-            for (const bullet of project.bullets) {
-              const bulletChar = getBulletChar();
-              const bulletText = bulletChar ? `${bulletChar} ${bullet}` : bullet;
-              yPosition = addText(bulletText, margin + cvStyle.spacing.bulletIndent, yPosition, cvStyle.fontSize.bullet, false, cvStyle.colors.text, contentWidth - cvStyle.spacing.bulletIndent);
-              yPosition -= 4;
-            }
-          } else if (project.description) {
-            // Fallback: split description into paragraphs or bullets
-            const descLines = project.description.split(/[.;]\s+/).filter((l: string) => l.trim().length > 20);
-            for (const line of descLines) {
-              if (yPosition < 70) {
-                page = pdfDoc.addPage([595, 842]);
-                yPosition = 800;
-              }
-              const bulletChar = getBulletChar();
-              const bulletText = bulletChar ? `${bulletChar} ${line.trim()}` : `• ${line.trim()}`;
-              yPosition = addText(bulletText, margin + cvStyle.spacing.bulletIndent, yPosition, cvStyle.fontSize.bullet, false, cvStyle.colors.text, contentWidth - cvStyle.spacing.bulletIndent);
-              yPosition -= 4;
-            }
-          }
-          
-          if (project.technologies && project.technologies.length > 0) {
-            const techText = project.technologies.join(", ");
-            yPosition = addText(`Technologies: ${techText}`, margin + cvStyle.spacing.bulletIndent, yPosition, cvStyle.fontSize.contact, false, cvStyle.colors.secondary, contentWidth - cvStyle.spacing.bulletIndent);
-            yPosition -= 4;
-          }
-          yPosition -= 4; // Reduced spacing between projects
-        }
-        yPosition -= 2; // Minimal spacing after section (no double spacing)
+        // Projects section removed - no longer rendered in CVs
+        console.log(`[PDF Generation] ⚠️ Projects section disabled - skipping`);
         break;
 
       case "certifications":
@@ -927,6 +1101,26 @@ async function generateDOCX(
 
   // Get CV style configuration
   const cvStyle = getCVStyle(template as CVTemplate);
+
+  // Fix mangled text spacing function (shared for education and projects)
+  const fixMangledText2 = (text: string): string => {
+    if (!text) return text;
+    // Split camelCase: "MasterofScience" -> "Master of Science" or "SoftwareDeveloper" -> "Software Developer"
+    let fixed = text.replace(/([a-z])([A-Z])/g, '$1 $2');
+    // Add space before parentheses: "Science(Merit" -> "Science (Merit" or "Developer(Remote" -> "Developer (Remote"
+    fixed = fixed.replace(/([a-zA-Z0-9])(\()/g, '$1 $2');
+    // Add space after parentheses: ")Trento" -> ") Trento" or ")Dubai" -> ") Dubai"
+    fixed = fixed.replace(/(\))([A-Za-z])/g, '$1 $2');
+    // Add space before commas: "Italy,Karachi" -> "Italy, Karachi" or "Bank,Company" -> "Bank, Company"
+    fixed = fixed.replace(/([a-zA-Z0-9])(,)([A-Za-z])/g, '$1$2 $3');
+    // Fix common patterns
+    fixed = fixed.replace(/\bMasterof\s*Science/gi, 'Master of Science');
+    fixed = fixed.replace(/\bBachelorof\s*Science/gi, 'Bachelor of Science');
+    fixed = fixed.replace(/\b(MeritScholar|Merit\s*Scholar)/gi, 'Merit Scholar');
+    fixed = fixed.replace(/\b(BatchGoldMedalist|Batch\s*Gold\s*Medalist)/gi, 'Batch Gold Medalist');
+    // Clean up multiple spaces
+    return fixed.replace(/\s+/g, ' ').trim();
+  };
 
   // Prepare sections using strategy
   const sections = prepareCVSections(structured, tailoredText, contactInfo, strategy);
@@ -1164,14 +1358,15 @@ async function generateDOCX(
       case "education":
         children.push(createSectionHeader(section.title));
         const eduLimit2 = getSectionLimits(section.importance, "education");
+        
         for (const edu of section.content.slice(0, eduLimit2)) {
-          const degree2 = edu.degree || edu.degree_name || "Degree";
-          const institution2 = edu.institution || edu.school || "Institution";
-          let startDate2 = edu.start_date || "";
-          let endDate2 = edu.end_date || "";
-          const year2 = edu.year || edu.graduation_year || "";
-          const gpa2 = edu.gpa || "";
-          const honors2 = edu.honors || "";
+          const degree2 = fixMangledText2(edu.degree || edu.degree_name || "Degree");
+          const institution2 = fixMangledText2(edu.institution || edu.school || "Institution");
+          let startDate2 = fixMangledText2(edu.start_date || "");
+          let endDate2 = fixMangledText2(edu.end_date || "");
+          const year2 = fixMangledText2(edu.year || edu.graduation_year || "");
+          const gpa2 = fixMangledText2(edu.gpa || "");
+          const honors2 = fixMangledText2(edu.honors || "");
 
           // Clean up dates - remove phrases like "Expected to end in", "Graduated in", etc.
           startDate2 = startDate2.replace(/^(expected to (start|begin) in|started in|from|since)\s+/i, "").trim();
@@ -1223,11 +1418,12 @@ async function generateDOCX(
           if (edu.coursework && edu.coursework.length > 0) {
             const bulletChar = cvStyle.layout.bulletStyle === "dash" ? "—" : 
                               cvStyle.layout.bulletStyle === "arrow" ? "→" : "•";
+            const courseworkItems = edu.coursework.slice(0, 6).map((c: string) => fixMangledText2(c));
             children.push(
               new Paragraph({
                 children: [
                   new TextRun({
-                    text: `${bulletChar} Relevant Coursework: ${edu.coursework.slice(0, 6).join(", ")}`,
+                    text: `${bulletChar} Relevant Coursework: ${courseworkItems.join(", ")}`,
                     size: cvStyle.fontSize.contact * 2, // Convert pt to half-points
                     font: cvStyle.fonts.docxBody || "Arial",
                     color: cvStyle.colors.text === rgb(0, 0, 0) ? "000000" : "000000",
@@ -1243,82 +1439,8 @@ async function generateDOCX(
         break;
 
       case "projects":
-        children.push(createSectionHeader(section.title));
-        const projLimit2 = getSectionLimits(section.importance, "projects");
-        for (const project of section.content.slice(0, projLimit2)) {
-          const projName2 = project.name || "Project";
-          children.push(
-            new Paragraph({
-              children: [
-                new TextRun({
-                  text: projName2,
-                  bold: true,
-                  size: cvStyle.fontSize.jobTitle * 2, // Convert pt to half-points
-                  font: cvStyle.fonts.docxHeading || "Arial",
-                  color: cvStyle.colors.heading === rgb(0, 0, 0) ? "000000" : "000000",
-                }),
-              ],
-              spacing: { after: cvStyle.spacing.betweenItems * 20 }, // Convert to twips
-            })
-          );
-
-          // Use bullets if available, otherwise fallback to description
-          if (project.bullets && project.bullets.length > 0) {
-            for (const bullet of project.bullets) {
-              const bulletChar = cvStyle.layout.bulletStyle === "dash" ? "—" : 
-                                cvStyle.layout.bulletStyle === "arrow" ? "→" : "•";
-              children.push(
-                new Paragraph({
-                  children: [
-                    new TextRun({
-                      text: `${bulletChar} ${bullet}`,
-                      size: cvStyle.fontSize.bullet * 2, // Convert pt to half-points
-                      font: cvStyle.fonts.docxBody || "Arial",
-                      color: cvStyle.colors.text === rgb(0, 0, 0) ? "000000" : "000000",
-                    }),
-                  ],
-                  indent: { left: cvStyle.spacing.bulletIndent * 20 }, // Convert to twips
-                  spacing: { after: Math.max(cvStyle.spacing.betweenItems * 20, 80) }, // Convert to twips, min 80
-                })
-              );
-            }
-          } else if (project.description) {
-            // Fallback to description if bullets not available
-            children.push(
-              new Paragraph({
-                children: [
-                  new TextRun({
-                    text: project.description,
-                    size: cvStyle.fontSize.body * 2, // Convert pt to half-points
-                    font: cvStyle.fonts.docxBody || "Arial",
-                    color: cvStyle.colors.text === rgb(0, 0, 0) ? "000000" : "000000",
-                  }),
-                ],
-                indent: { left: cvStyle.spacing.bulletIndent * 20 }, // Convert to twips
-                spacing: { after: Math.max(cvStyle.spacing.betweenItems * 20, 80) }, // Convert to twips
-              })
-            );
-          }
-
-          if (project.technologies && project.technologies.length > 0) {
-            const techText2 = project.technologies.join(", ");
-            children.push(
-              new Paragraph({
-                children: [
-                  new TextRun({
-                    text: `Technologies: ${techText2}`,
-                    size: cvStyle.fontSize.contact * 2, // Convert pt to half-points
-                    font: cvStyle.fonts.docxBody || "Arial",
-                    color: cvStyle.colors.secondary === rgb(0, 0, 0) ? "000000" : "333333",
-                    italics: true,
-                  }),
-                ],
-                indent: { left: 360 },
-                spacing: { after: 80 },
-              })
-            );
-          }
-        }
+        // Projects section removed - no longer rendered in CVs
+        console.log(`[DOCX Generation] ⚠️ Projects section disabled - skipping`);
         break;
 
       case "certifications":

@@ -417,7 +417,8 @@ ${jobContext}
 
 ${toneInstructions}
 
-KEYWORDS FROM JOB DESCRIPTION TO INCORPORATE: ${keywords.slice(0, 30).join(", ")}
+CRITICAL: KEYWORDS FROM JOB DESCRIPTION THAT MUST BE INCORPORATED INTO BULLETS:
+${keywords.slice(0, 30).map((kw, idx) => `${idx + 1}. ${kw}`).join("\n")}
 
 EXISTING WORK EXPERIENCE TO OPTIMIZE:
 ${experienceText}
@@ -426,37 +427,50 @@ TASK:
 For EACH job, optimize the bullet points to be HIGHLY RELEVANT to the job description above. 
 
 CRITICAL OPTIMIZATION REQUIREMENTS:
-1. **JOB DESCRIPTION ALIGNMENT**: Each bullet MUST directly relate to requirements mentioned in the job description above
-   - If the job requires "scalable systems", mention scalability achievements
-   - If the job requires "API development", highlight API work
-   - If the job requires "team collaboration", emphasize team achievements
-   - Match the language, terminology, and focus areas from the job description
 
-2. **KEYWORD INCORPORATION**: Naturally weave in keywords from the job description (${keywords.slice(0, 30).join(", ")})
-   - Use the exact technologies mentioned in the job description
-   - Match the job's domain focus (e.g., fintech, healthcare, e-commerce)
-   - Align with the job's priorities (e.g., performance, security, user experience)
+1. **MANDATORY KEYWORD INCORPORATION**: Each bullet MUST include at least 1-2 keywords from the job description list above
+   - Use the EXACT keywords/phrases from the job description (e.g., if JD says "microservices", use "microservices" in bullets)
+   - Incorporate keywords naturally - don't force them, but ensure they appear in context
+   - If the job requires specific technologies (e.g., "React", "AWS", "Docker"), mention them in relevant bullets
+   - Match the job's domain terminology (e.g., if JD uses "fintech", use "fintech" terminology)
+   - Use the same action verbs and phrases from the job description when describing similar work
 
-3. **METRICS & IMPACT**: Add quantifiable metrics where possible (%, $, team size, time saved, users, transactions, performance improvements, scale)
+2. **JOB DESCRIPTION ALIGNMENT**: Each bullet MUST directly relate to requirements mentioned in the job description above
+   - If the job requires "scalable systems", mention scalability achievements and use "scalable" keyword
+   - If the job requires "API development", highlight API work and use "API" keyword
+   - If the job requires "team collaboration", emphasize team achievements and use "collaboration" keyword
+   - Match the language, terminology, and focus areas from the job description EXACTLY
+
+3. **KEYWORD PRIORITY**: Prioritize incorporating these high-value keywords from the job description:
+   ${keywords.slice(0, 15).join(", ")}
+   - These are the most important keywords - ensure they appear in multiple bullets across different jobs
+   - If a keyword appears multiple times in the job description, it's high priority - use it in bullets
+
+4. **METRICS & IMPACT**: Add quantifiable metrics where possible (%, $, team size, time saved, users, transactions, performance improvements, scale)
    - If original bullets have metrics, enhance them
    - If not, add reasonable metrics based on the work described
+   - Use metrics that align with job description priorities (e.g., if JD emphasizes "performance", include performance metrics)
 
-4. **ACTION VERBS**: Start with strong action verbs (Led, Developed, Architected, Optimized, Implemented, Delivered, Built, Designed, etc.)
+5. **ACTION VERBS**: Start with strong action verbs (Led, Developed, Architected, Optimized, Implemented, Delivered, Built, Designed, etc.)
+   - Use action verbs that match the job description's language
+   - If JD uses "Architected", use "Architected" in bullets for similar work
 
-5. **COMPLETE SENTENCES**: Each bullet MUST be a complete, meaningful sentence (NOT cut off mid-sentence)
+6. **COMPLETE SENTENCES**: Each bullet MUST be a complete, meaningful sentence (NOT cut off mid-sentence)
    - Each bullet should be 1-2 lines max (aim for 100-150 characters)
    - Ensure bullets are NOT truncated - each must be a full, complete statement
 
-6. **PRESERVE INFORMATION**: PRESERVE ALL information from original bullets
+7. **PRESERVE INFORMATION**: PRESERVE ALL information from original bullets
    - Merge related bullets if they cover similar topics
    - Don't lose any key achievements or responsibilities
    - If original bullets are incomplete/cut off, complete them logically based on context
+   - When merging, ensure the merged bullet includes relevant keywords
 
-7. **BULLET COUNT**: Create 2-4 optimized bullets per job
-   - Prioritize bullets that best match the job description
+8. **BULLET COUNT**: Create 2-4 optimized bullets per job
+   - Prioritize bullets that best match the job description and incorporate keywords
    - Merge related bullets to create stronger, more impactful statements
+   - Ensure each bullet includes at least one keyword from the job description
 
-8. **PRESERVE STRUCTURE**: PRESERVE the job title, company, duration, and location EXACTLY as provided
+9. **PRESERVE STRUCTURE**: PRESERVE the job title, company, duration, and location EXACTLY as provided
    - ONLY optimize the bullet points
    - Keep all other structured data unchanged
 
@@ -464,9 +478,10 @@ CRITICAL RULES:
 - Keep ALL ${structuredData.experience.length} jobs (don't skip any)
 - Do NOT change job titles, company names, durations, or locations
 - ONLY optimize the bullet points (keep all other structured data unchanged)
-- Each bullet MUST be optimized to match the job description requirements
-- Make bullets read like they were written specifically for THIS job
-- Prioritize bullets that directly address job requirements over generic achievements
+- Each bullet MUST include at least 1-2 keywords from the job description list above
+- Make bullets read like they were written specifically for THIS job using THIS job's terminology
+- Prioritize bullets that directly address job requirements and incorporate keywords over generic achievements
+- If a keyword from the job description is relevant to the work done, USE IT in the bullet
 
 Return ONLY valid JSON array (no markdown, no explanations):
 [
