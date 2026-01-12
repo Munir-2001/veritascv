@@ -58,18 +58,28 @@ const RESUME_PARSING_PROMPT = `You are an expert resume parser. Your job is to e
 CRITICAL FORMATTING RULES:
 
 1. EXPERIENCE SECTION:
-   - Extract ONLY actual job/work experience (not projects, not internships that are actually projects)
+   - Extract ALL job/work experience including:
+     * Full-time jobs
+     * Part-time jobs
+     * Internships (ALL internships are work experience, not projects)
+     * Co-op positions
+     * Contract work
+     * Research assistant positions (if at a company/lab with dates)
+     * Teaching assistant positions (if paid, with dates)
+     * Work-study positions
+     * Temporary positions
    - Format: Company Name → Job Title → Dates → Bullet Points
    - Each experience entry MUST have:
      * company: The company name (extract accurately, don't mix with descriptions)
-     * title: The job title/position
+     * title: The job title/position (e.g., "Software Engineering Intern", "Part-time Developer", "Research Assistant")
      * duration: Employment dates (format: "Month Year - Month Year" or "Month Year - Present")
      * location: City, Country (if mentioned)
      * achievements: Array of ALL bullet points describing what the person did at that job
    - DO NOT include descriptions in the company name field
    - DO NOT attach dates to company names
    - Extract ALL bullet points/contributions the person made at each company
-   - Only include actual employment - exclude projects, academic work, or volunteer work unless explicitly listed as work experience
+   - CRITICAL: Internships, co-ops, part-time jobs, and research positions ARE work experience - include them!
+   - Only exclude: unpaid volunteer work (unless listed under "Experience"), personal projects (these go in Projects section)
 
 2. PROJECTS SECTION:
    - Extract ONLY projects that are explicitly under a "Projects" heading
@@ -94,6 +104,7 @@ IMPORTANT:
 - For experience: Company name should be clean (no descriptions attached)
 - For experience: All bullet points should be in the achievements array
 - Preserve the original wording of bullet points (don't over-optimize)
+- CRITICAL: Include ALL internships, co-ops, part-time jobs, and research positions in experience section - these ARE work experience!
 
 Return ONLY valid JSON in this exact format:
 {
@@ -107,14 +118,23 @@ Return ONLY valid JSON in this exact format:
   },
   "experience": [
     {
-      "title": "Job Title/Position",
-      "company": "Company Name (clean, no descriptions)",
-      "duration": "Month Year - Month Year",
-      "location": "City, Country (if mentioned)",
+      "title": "Software Engineering Intern",
+      "company": "Google",
+      "duration": "June 2024 - August 2024",
+      "location": "Mountain View, CA",
       "achievements": [
-        "First bullet point describing what person did",
-        "Second bullet point describing contributions",
-        "All bullet points from the resume for this job"
+        "Developed feature X resulting in Y improvement",
+        "Collaborated with team on Z project"
+      ]
+    },
+    {
+      "title": "Research Assistant",
+      "company": "MIT Computer Science Lab",
+      "duration": "January 2024 - May 2024",
+      "location": "Cambridge, MA",
+      "achievements": [
+        "Conducted research on topic A",
+        "Published paper on B"
       ]
     }
   ],
@@ -227,7 +247,7 @@ Remember: Return ONLY valid JSON, no markdown formatting, no explanations.`;
  */
 export function convertToInternalFormat(aiData: ParsedResumeData): any {
   return {
-    experience: aiData.experience.map(exp => ({
+    experience: (aiData.experience || []).map(exp => ({
       title: exp.title,
       company: exp.company,
       duration: exp.duration,
@@ -244,13 +264,13 @@ export function convertToInternalFormat(aiData: ParsedResumeData): any {
       honors: edu.honors,
     })),
     skills: aiData.skills || [],
-    projects: aiData.projects.map(proj => ({
+    projects: (aiData.projects || []).map(proj => ({
       name: proj.name,
       description: proj.description,
       technologies: proj.technologies || [],
       link: proj.link,
     })),
-    certifications: aiData.certifications.map(cert => ({
+    certifications: (aiData.certifications || []).map(cert => ({
       name: cert.name,
       issuer: cert.issuer,
       year: cert.year,

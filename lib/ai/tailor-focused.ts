@@ -184,6 +184,7 @@ export async function tailorResumeWithFocusedPrompts(
 
   // Step 2: Experience Optimization
   console.log(`[Focused Tailoring] Step 2/6: Optimizing Experience...`);
+  console.log(`[Focused Tailoring] structured_data available: ${!!request.structured_data}, experience: ${request.structured_data?.experience?.length || 0} jobs`);
   const experience = await optimizeExperience(
     request.raw_text,
     jobContext,
@@ -393,6 +394,78 @@ async function optimizeExperience(
   config: any,
   structuredData?: any
 ): Promise<TailoredSections["experience"]> {
+  // PRIORITY 1: Use structured_data if available (it was already AI-parsed during upload)
+  if (structuredData?.experience && Array.isArray(structuredData.experience) && structuredData.experience.length > 0) {
+    console.log(`[Focused Tailoring] ✅ Using pre-parsed structured_data for experience (${structuredData.experience.length} jobs)`);
+    console.log(`[Focused Tailoring] Will optimize bullets with AI while preserving job details...`);
+    
+    // Build a prompt to optimize the existing structured experience
+    const experienceText = structuredData.experience.map((exp: any, idx: number) => {
+      const bullets = exp.bullets || [exp.description] || exp.achievements || [];
+      return `\nJOB ${idx + 1}:\nTitle: ${exp.title}\nCompany: ${exp.company}\nDuration: ${exp.duration}\nLocation: ${exp.location || ""}\nCurrent Bullets:\n${bullets.map((b: string, i: number) => `  ${i + 1}. ${b}`).join("\n")}`;
+    }).join("\n");
+    
+    const optimizePrompt = `You are an expert resume writer. Optimize existing work experience for a job application.
+
+${jobContext}
+
+${toneInstructions}
+
+KEYWORDS TO MATCH: ${keywords.slice(0, 30).join(", ")}
+
+EXISTING WORK EXPERIENCE TO OPTIMIZE:
+${experienceText}
+
+TASK:
+Optimize EACH job's bullet points to:
+1. Incorporate job keywords naturally
+2. Add quantifiable metrics where possible (%, $, team size, time saved, users)
+3. Use strong action verbs (Led, Developed, Architected, Optimized, etc.)
+4. Show direct relevance to the job description requirements
+5. Maintain exactly 2 bullets per job
+6. PRESERVE the job title, company, duration, and location EXACTLY as provided
+
+CRITICAL RULES:
+- Keep ALL ${structuredData.experience.length} jobs
+- Do NOT change job titles, company names, durations, or locations
+- ONLY optimize the bullet points
+- Each job MUST have EXACTLY 2 bullets
+- Make bullets highly relevant to the job description
+- Use existing bullets as a base but enhance them with keywords and metrics
+
+Return ONLY valid JSON array:
+[
+  {
+    "title": "...",
+    "company": "...",
+    "duration": "...",
+    "location": "...",
+    "bullets": ["Optimized bullet 1 with keywords and metrics", "Optimized bullet 2 with keywords and metrics"]
+  },
+  ...
+]`;
+
+    try {
+      const response = await callGemini(optimizePrompt, config);
+      const cleaned = cleanJSONResponse(response);
+      const optimized = JSON.parse(cleaned);
+      
+      if (Array.isArray(optimized) && optimized.length > 0) {
+        console.log(`[Focused Tailoring] ✅ Experience optimized: ${optimized.length} jobs`);
+        return optimized;
+      }
+    } catch (error: any) {
+      console.error(`[Focused Tailoring] Experience optimization failed:`, error);
+      console.log(`[Focused Tailoring] Falling back to structured_data as-is...`);
+    }
+    
+    // If optimization fails, return structured_data formatted properly
+    return extractExperienceFallback(rawText, structuredData);
+  }
+  
+  // PRIORITY 2: Try AI parsing from raw text (if structured_data not available)
+  console.log(`[Focused Tailoring] ⚠️ No structured_data.experience available, trying AI extraction from raw_text...`);
+  
   // Log raw text info for debugging
   console.log(`[Focused Tailoring] optimizeExperience - rawText length: ${rawText.length} chars`);
   console.log(`[Focused Tailoring] optimizeExperience - rawText preview: ${rawText.substring(0, 200)}...`);
@@ -631,6 +704,8 @@ function extractExperienceFallback(rawText: string, structuredData?: any): Tailo
 
 /**
  * Step 3: Match Projects
+ * 
+ * STRATEGY: Use structured_data as source of truth if available.
  */
 async function matchProjects(
   rawText: string,
@@ -647,6 +722,73 @@ async function matchProjects(
     console.log(`[Focused Tailoring] Skipping projects (strategy: skip)`);
     return [];
   }
+  
+  // PRIORITY 1: Use structured_data if available
+  if (structuredData?.projects && Array.isArray(structuredData.projects) && structuredData.projects.length > 0) {
+    console.log(`[Focused Tailoring] ✅ Using pre-parsed structured_data for projects (${structuredData.projects.length} projects)`);
+    console.log(`[Focused Tailoring] Will optimize with AI while preserving structure...`);
+    
+    // Optimize the existing structured projects with AI
+    try {
+      const projectsText = structuredData.projects.map((proj: any, idx: number) => {
+        const bullets = proj.bullets || [proj.description] || [];
+        const techs = proj.technologies || [];
+        return `
+PROJECT ${idx + 1}:
+Name: ${proj.name}
+Technologies: ${techs.join(", ")}
+Bullets:
+${bullets.map((b: string, i: number) => `  ${i + 1}. ${b}`).join("\n")}`;
+      }).join("\n");
+      
+      const optimizePrompt = `You are an expert resume writer. Optimize the following projects for a job application.
+
+${jobContext}
+
+${toneInstructions}
+
+TECH STACK FROM JOB: ${keywords.slice(0, 30).join(", ")}
+
+EXISTING PROJECTS TO OPTIMIZE:
+${projectsText}
+
+TASK:
+Optimize EACH project to:
+1. Add technologies from job description tech stack (prioritize these)
+2. Enhance bullets to show job-relevant achievements
+3. Add metrics where possible
+4. Maximum 3 bullets per project
+5. PRESERVE the project name
+
+Return ONLY valid JSON array:
+[
+  {
+    "name": "...",
+    "technologies": ["Tech from job", ...],
+    "bullets": ["...", "...", "..."]
+  },
+  ...
+]`;
+
+      const response = await callGemini(optimizePrompt, config);
+      const cleaned = cleanJSONResponse(response);
+      const optimized = JSON.parse(cleaned);
+      
+      if (Array.isArray(optimized) && optimized.length > 0) {
+        console.log(`[Focused Tailoring] ✅ Projects optimized: ${optimized.length} projects`);
+        return optimized;
+      }
+    } catch (error: any) {
+      console.error(`[Focused Tailoring] Projects optimization failed:`, error);
+      console.log(`[Focused Tailoring] Falling back to unoptimized structured_data...`);
+    }
+    
+    // If optimization fails, return structured_data as-is
+    return extractProjectsFallback(rawText, structuredData);
+  }
+  
+  // PRIORITY 2: Try AI parsing from raw text (if structured_data not available)
+  console.log(`[Focused Tailoring] ⚠️ No structured_data.projects available, trying AI extraction from raw_text...`);
 
   const prompt = `You are an expert resume writer. Extract and optimize projects from a resume.
 

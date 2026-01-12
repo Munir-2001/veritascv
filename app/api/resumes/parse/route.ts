@@ -114,41 +114,56 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Step 3: Extract structured data using AI parsing (PRIMARY METHOD)
+    // Step 3: Extract structured data using regex parsing (PRIMARY METHOD)
     console.log(`[Parse] Raw text length: ${rawText.length}`);
-    console.log(`[Parse] First 200 chars:`, rawText.substring(0, 200));
+    console.log(`[Parse] First 500 chars:`, rawText.substring(0, 500));
     
-    // Use AI-powered parsing as PRIMARY method (much more reliable than regex)
-    let aiParsingFailed = false;
-    try {
-      const { parseResumeWithAI, convertToInternalFormat } = await import("@/lib/ai/resumeParser");
-      console.log(`[Parse] 🤖 Using AI parsing (Gemini)...`);
-      
-      const aiParsed = await parseResumeWithAI(rawText);
-      
-      if (aiParsed && aiParsed.experience && aiParsed.experience.length > 0) {
-        console.log(`[Parse] ✅ AI parsing successful!`);
-        structuredData = convertToInternalFormat(aiParsed);
-        console.log(`[Parse] AI extracted:`, {
-          experience: structuredData.experience?.length || 0,
-          education: structuredData.education?.length || 0,
-          projects: structuredData.projects?.length || 0,
-          skills: structuredData.skills?.length || 0,
-        });
-      } else {
-        console.warn(`[Parse] ⚠️ AI parsing returned empty/invalid data, falling back to regex`);
-        aiParsingFailed = true;
-      }
-    } catch (error: any) {
-      console.error(`[Parse] ❌ AI parsing error: ${error.message}`);
-      console.error(`[Parse] Error details:`, error);
-      aiParsingFailed = true;
+    // Check if Experience section exists in raw text
+    const experienceIndex = rawText.toLowerCase().indexOf('experience');
+    if (experienceIndex >= 0) {
+      console.log(`[Parse] ✅ Found "Experience" at index ${experienceIndex}`);
+      console.log(`[Parse] Context around "Experience" (200 chars before and after):`, 
+        rawText.substring(Math.max(0, experienceIndex - 200), experienceIndex + 400));
+    } else {
+      console.log(`[Parse] ⚠️ WARNING: "Experience" NOT FOUND in raw text!`);
+      // Show all unique words that might be section headers
+      const sectionHeaders = ['experience', 'education', 'skills', 'projects', 'certifications', 'work', 'employment'];
+      const foundHeaders = sectionHeaders.filter(h => rawText.toLowerCase().includes(h));
+      console.log(`[Parse] Found section headers in text:`, foundHeaders);
     }
     
-    // Fallback to regex only if AI parsing completely failed
-    if (aiParsingFailed) {
-      console.log(`[Parse] 🔄 Falling back to regex parsing...`);
-      structuredData = extractStructuredData(rawText);
+    // Use regex parsing as PRIMARY method (fast, no API costs)
+    console.log(`[Parse] 🔍 Using regex parsing first...`);
+    structuredData = extractStructuredData(rawText);
+    console.log(`[Parse] Regex extracted:`, {
+      experience: structuredData.experience?.length || 0,
+      education: structuredData.education?.length || 0,
+      projects: structuredData.projects?.length || 0,
+      skills: structuredData.skills?.length || 0,
+    });
+    
+    // If regex found no experience (or very little), try AI parsing as fallback/enhancement
+    if (!structuredData.experience || structuredData.experience.length === 0) {
+      console.log(`[Parse] ⚠️ Regex found no experience, trying AI parsing as fallback...`);
+      try {
+        const { parseResumeWithAI, convertToInternalFormat } = await import("@/lib/ai/resumeParser");
+        console.log(`[Parse] 🤖 Using AI parsing (Gemini) as fallback...`);
+        
+        const aiParsed = await parseResumeWithAI(rawText);
+        
+        if (aiParsed && aiParsed.experience && aiParsed.experience.length > 0) {
+          console.log(`[Parse] ✅ AI parsing found ${aiParsed.experience.length} experience entries!`);
+          const aiData = convertToInternalFormat(aiParsed);
+          // Use AI results for experience, keep regex results for other fields
+          structuredData.experience = aiData.experience;
+          console.log(`[Parse] ✅ Using AI-extracted experience (${structuredData.experience.length} entries)`);
+        } else {
+          console.log(`[Parse] ⚠️ AI parsing also found no experience - resume may not have experience section`);
+        }
+      } catch (error: any) {
+        console.error(`[Parse] ❌ AI parsing error: ${error.message}`);
+        console.log(`[Parse] Continuing with regex results only...`);
+      }
     }
     
     console.log(`[Parse] Final extracted data:`, {
@@ -158,6 +173,15 @@ export async function POST(request: NextRequest) {
       skills: structuredData.skills?.length || 0,
       certifications: structuredData.certifications?.length || 0,
     });
+    
+    // Debug: Log experience details
+    if (structuredData.experience && structuredData.experience.length > 0) {
+      console.log(`[Parse] Experience entries:`, JSON.stringify(structuredData.experience, null, 2));
+    } else {
+      console.warn(`[Parse] ⚠️ WARNING: No experience entries found!`);
+      console.warn(`[Parse] Structured data keys:`, Object.keys(structuredData));
+      console.warn(`[Parse] Experience array:`, structuredData.experience);
+    }
 
     // Step 4: Get user's profile to ensure it exists
     const { data: profile, error: profileError } = await supabase
@@ -213,6 +237,8 @@ export async function POST(request: NextRequest) {
       file_path,
       raw_text_length: rawText?.length || 0,
       structured_keys: structuredData ? Object.keys(structuredData) : [],
+      experience_count: structuredData?.experience?.length || 0,
+      experience_preview: structuredData?.experience?.slice(0, 2) || [],
     });
 
     const { data: resume, error: resumeError } = await supabase
@@ -344,7 +370,10 @@ function extractStructuredData(text: string): any {
     switch (section.type) {
       case 'experience':
         // Parse as experience, but we'll reclassify later if needed
+        console.log(`[Parse] Parsing experience section (${section.content.length} chars)...`);
+        console.log(`[Parse] Experience section content preview: ${section.content.substring(0, 300)}...`);
         const experienceEntries = parseExperienceSection(section.content, text);
+        console.log(`[Parse] parseExperienceSection returned ${experienceEntries.length} entries`);
         structured.experience.push(...experienceEntries);
         break;
       case 'projects':
@@ -381,8 +410,13 @@ function extractStructuredData(text: string): any {
   // NOTE: Only use fallback for experience, NOT for projects
   // Projects should ONLY come from explicit "Projects" sections
   if (structured.experience.length === 0) {
-    console.log(`[Parse] No experience section found, trying fallback parsing...`);
-    structured.experience = parseExperienceFallback(text);
+    console.log(`[Parse] ⚠️ No experience entries found after section parsing!`);
+    console.log(`[Parse] Sections identified: ${sections.length}`);
+    console.log(`[Parse] Experience sections found: ${sections.filter(s => s.type === 'experience').length}`);
+    console.log(`[Parse] Trying fallback parsing...`);
+    const fallbackExperience = parseExperienceFallback(text);
+    console.log(`[Parse] Fallback parsing returned ${fallbackExperience.length} experience entries`);
+    structured.experience = fallbackExperience;
   }
   // Projects: NO FALLBACK - only parse from explicit Projects section
   if (structured.projects.length === 0) {
@@ -425,20 +459,26 @@ function identifySections(text: string): ResumeSection[] {
   const sections: ResumeSection[] = [];
   const lines = text.split('\n');
   
-  // Section header patterns (case-insensitive)
+  console.log(`[Parse] Identifying sections from ${lines.length} total lines...`);
+  console.log(`[Parse] DEBUG: First 20 lines (for format reference only):`, lines.slice(0, 20).map((l, i) => `${i}: "${l.trim()}"`));
+  console.log(`[Parse] Processing ALL ${lines.length} lines to find sections...`);
+  
+  // Section header patterns (case-insensitive, more flexible)
   // Note: "EXPERIENCE" is ambiguous - it might contain projects for students
   // We'll parse it as experience but reclassify later using content analysis
   const sectionPatterns: Array<{ pattern: RegExp; type: ResumeSection['type']; name: string }> = [
     // Experience sections (may contain projects for students/early career)
-    { pattern: /^(PROFESSIONAL\s+EXPERIENCE|WORK\s+EXPERIENCE|EMPLOYMENT\s+HISTORY|EMPLOYMENT|EXPERIENCE|CAREER\s+HISTORY|WORK\s+HISTORY)$/i, type: 'experience', name: 'Experience' },
+    // More flexible: allow for extra whitespace, dashes, markdown headers (#), or formatting
+    // Pattern: optional #, optional space, then EXPERIENCE (case-insensitive)
+    { pattern: /^\s*#?\s*(PROFESSIONAL\s+EXPERIENCE|WORK\s+EXPERIENCE|EMPLOYMENT\s+HISTORY|EMPLOYMENT|EXPERIENCE|CAREER\s+HISTORY|WORK\s+HISTORY)[\s\-:]*$/i, type: 'experience', name: 'Experience' },
     // Projects sections
-    { pattern: /^(PROJECTS|PROJECT|PORTFOLIO|SIDE\s+PROJECTS|PERSONAL\s+PROJECTS|ACADEMIC\s+PROJECTS)$/i, type: 'projects', name: 'Projects' },
+    { pattern: /^\s*#?\s*(PROJECTS|PROJECT|PORTFOLIO|SIDE\s+PROJECTS|PERSONAL\s+PROJECTS|ACADEMIC\s+PROJECTS)[\s\-:]*$/i, type: 'projects', name: 'Projects' },
     // Education sections
-    { pattern: /^(EDUCATION|ACADEMIC\s+BACKGROUND|QUALIFICATIONS|ACADEMIC\s+QUALIFICATIONS)$/i, type: 'education', name: 'Education' },
+    { pattern: /^\s*#?\s*(EDUCATION|ACADEMIC\s+BACKGROUND|QUALIFICATIONS|ACADEMIC\s+QUALIFICATIONS)[\s\-:]*$/i, type: 'education', name: 'Education' },
     // Skills sections
-    { pattern: /^(SKILLS|TECHNICAL\s+SKILLS|COMPETENCIES|TECHNICAL\s+COMPETENCIES|CORE\s+SKILLS)$/i, type: 'skills', name: 'Skills' },
+    { pattern: /^\s*#?\s*(SKILLS|TECHNICAL\s+SKILLS|COMPETENCIES|TECHNICAL\s+COMPETENCIES|CORE\s+SKILLS)[\s\-:]*$/i, type: 'skills', name: 'Skills' },
     // Certifications sections
-    { pattern: /^(CERTIFICATIONS|CERTIFICATION|CERTIFICATES|LICENSES|PROFESSIONAL\s+CERTIFICATIONS)$/i, type: 'certifications', name: 'Certifications' },
+    { pattern: /^\s*#?\s*(CERTIFICATIONS|CERTIFICATION|CERTIFICATES|LICENSES|PROFESSIONAL\s+CERTIFICATIONS)[\s\-:]*$/i, type: 'certifications', name: 'Certifications' },
   ];
 
   // Track line positions in the original text
@@ -453,8 +493,12 @@ function identifySections(text: string): ResumeSection[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     
+    // Skip empty lines
+    if (!line || line.length === 0) continue;
+    
     for (const { pattern, type, name } of sectionPatterns) {
       if (pattern.test(line)) {
+        console.log(`[Parse] ✅ Matched section pattern "${name}" on line ${i}: "${line}"`);
         // Find the end of this section (next section header or end of text)
         let endLineIndex = lines.length;
         
@@ -480,7 +524,8 @@ function identifySections(text: string): ResumeSection[] {
         const endIndex = endLineIndex < lines.length ? lineIndices[endLineIndex] : text.length;
         const sectionContent = text.substring(startIndex, endIndex).trim();
         
-        console.log(`[Parse] Found section: ${name} (lines ${i}-${endLineIndex}, ${sectionContent.length} chars)`);
+        console.log(`[Parse] ✅ Found section: ${name} (lines ${i}-${endLineIndex}, ${sectionContent.length} chars)`);
+        console.log(`[Parse] Section content preview (first 200 chars): ${sectionContent.substring(0, 200)}...`);
         
         sections.push({
           name,
@@ -494,6 +539,9 @@ function identifySections(text: string): ResumeSection[] {
       }
     }
   }
+  
+  console.log(`[Parse] Section identification complete: Found ${sections.length} sections`);
+  console.log(`[Parse] Sections found:`, sections.map(s => `${s.name} (${s.type})`));
 
   return sections;
 }
@@ -506,8 +554,11 @@ function identifySections(text: string): ResumeSection[] {
  *   -bullet points describing what person did
  */
 function parseExperienceSection(sectionContent: string, fullText: string): any[] {
+  console.log(`[Parse] parseExperienceSection called with ${sectionContent.length} chars`);
   const experience: any[] = [];
   const lines = sectionContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  console.log(`[Parse] parseExperienceSection: Processing ${lines.length} lines`);
+  console.log(`[Parse] parseExperienceSection: First 10 lines:`, lines.slice(0, 10).map((l, i) => `${i}: "${l}"`));
   
   let currentJob: any = null;
   let currentBullets: string[] = [];
@@ -541,17 +592,23 @@ function parseExperienceSection(sectionContent: string, fullText: string): any[]
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const nextLine = i + 1 < lines.length ? lines[i + 1] : '';
+    const prevLine = i > 0 ? lines[i - 1] : '';
     
     // Skip empty lines
     if (!line || line.length === 0) continue;
     
+    console.log(`[Parse] 🔍 Processing line ${i}/${lines.length}: "${line.substring(0, 60)}${line.length > 60 ? '...' : ''}"`);
+    console.log(`[Parse]   Current state: currentJob=${!!currentJob}, expectingPosition=${expectingPosition}, bullets=${currentBullets.length}`);
+    
     // Skip if line matches exclusion patterns
     if (excludePatterns.some(pattern => pattern.test(line))) {
-      // Save current job if valid
-      if (currentJob && currentJob.company && currentJob.title && currentJob.duration && currentBullets.length > 0) {
+      // Save current job if valid (duration and bullets are optional)
+      if (currentJob && currentJob.company && currentJob.title) {
         currentJob.bullets = currentBullets;
+        // Set duration to empty string if not provided
+        if (!currentJob.duration) currentJob.duration = "";
         experience.push(currentJob);
-        console.log(`[Parse] ✅ Valid experience: "${currentJob.title}" at "${currentJob.company}"`);
+        console.log(`[Parse] ✅ Valid experience (exclusion pattern): "${currentJob.title}" at "${currentJob.company}" (bullets: ${currentBullets.length}, duration: ${currentJob.duration || "not provided"})`);
       }
       currentJob = null;
       currentBullets = [];
@@ -562,16 +619,214 @@ function parseExperienceSection(sectionContent: string, fullText: string): any[]
     // Check if this is a date line (standalone)
     const dateLineMatch = line.match(/^((?:May|June|January|February|March|April|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|\d{4})\s*[-–]\s*((?:May|June|January|February|March|April|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|\d{4}|Present|Current)$/i);
     
-    // Check if line contains a date pattern (for position + date on same line)
+    // Check if line contains a date pattern
     const hasDatePattern = line.match(/((?:May|June|January|February|March|April|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|\d{4})\s*[-–]\s*((?:May|June|January|February|March|April|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|\d{4}|Present|Current)/i);
+    
+    // FORMAT 1: Company + Dates on same line (with space): "Veripark Aug 2024 – Aug 2025"
+    // Pattern: Company name (capitalized, 2-50 chars) + space + dates
+    // IMPORTANT: Match company name that ends BEFORE month name (don't include month in company name)
+    const companyDateLineMatch = line.match(/^([A-Z][A-Za-z0-9\s&.,-]+?)\s+((?:Aug|Jan|Feb|Mar|Apr|May|Jun|Jul|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}|\d{4})\s*[-–]\s*((?:Aug|Jan|Feb|Mar|Apr|May|Jun|Jul|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}|\d{4}|Present|Current)$/i);
+    
+    // FORMAT 2: Mangled format (no space): "VeriparkAug 2024 – Aug 2025"
+    // Need to match company name that ends before a month name
+    // Pattern: Company name (ends before month name like Aug, Jan, etc.) + month + year - month + year
+    const mangledCompanyDateMatch = line.match(/^([A-Z][A-Za-z0-9\s&.,-]+?)((?:Aug|Jan|Feb|Mar|Apr|May|Jun|Jul|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})\s*[-–]\s*((?:Aug|Jan|Feb|Mar|Apr|May|Jun|Jul|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}|\d{4}|Present|Current)/i);
+    
+    // FORMAT 1: Handle "Company Dates" format: "Veripark Aug 2024 – Aug 2025" (with space)
+    // CRITICAL: Check this FIRST, before other patterns, and ALWAYS check (even if currentJob exists)
+    if (companyDateLineMatch) {
+      let companyName = companyDateLineMatch[1].trim();
+      const startDate = companyDateLineMatch[2].trim();
+      const endDate = companyDateLineMatch[3]?.trim() || "Present";
+      
+      console.log(`[Parse] 🔍 [FORMAT 1] Checking companyDateLineMatch: "${companyName}" with dates "${startDate} - ${endDate}"`);
+      
+      // Remove trailing month names that might have been captured (e.g., "Techlogix AdalfiFeb" -> "Techlogix Adalfi")
+      const monthNames = ['Aug', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Sep', 'Oct', 'Nov', 'Dec',
+                         'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 
+                         'September', 'October', 'November', 'December'];
+      for (const month of monthNames) {
+        if (companyName.toLowerCase().endsWith(month.toLowerCase())) {
+          companyName = companyName.substring(0, companyName.length - month.length).trim();
+          console.log(`[Parse] 🔧 Removed trailing month "${month}" from company name`);
+          break;
+        }
+      }
+      
+      // Check if it's actually a company name (not a job title)
+      // IMPORTANT: Don't reject company names ending with ".ai" - that's a domain extension, not the "AI" keyword
+      const normalizedCompany = companyName.toLowerCase();
+      const hasJobTitleInCompany = jobTitleKeywords.some(keyword => {
+        // Special case: if company ends with ".ai", don't match "AI" keyword unless it's part of the actual name
+        if (keyword.toLowerCase() === 'ai' && normalizedCompany.endsWith('.ai')) {
+          // Check if "ai" appears elsewhere in the name (not just as domain extension)
+          const nameWithoutDomain = normalizedCompany.replace(/\.ai$/, '');
+          return nameWithoutDomain.includes('ai');
+        }
+        return new RegExp(`\\b${keyword}\\b`, 'i').test(companyName);
+      });
+      
+      if (!hasJobTitleInCompany && companyName.length > 2 && companyName.length < 50) {
+        // ALWAYS save previous job if it exists and is valid (this allows multiple experiences)
+        if (currentJob && currentJob.company && currentJob.title) {
+          currentJob.bullets = currentBullets;
+          if (!currentJob.duration) currentJob.duration = "";
+          experience.push(currentJob);
+          console.log(`[Parse] ✅ [FORMAT 1] Saved previous experience before new company: "${currentJob.title}" at "${currentJob.company}" (bullets: ${currentBullets.length}, duration: ${currentJob.duration || "not provided"})`);
+        }
+        
+        console.log(`[Parse] ✅ [FORMAT 1] Found company+dates line: "${companyName}" with dates "${startDate} - ${endDate}"`);
+        currentJob = {
+          company: companyName,
+          title: "",
+          duration: `${startDate} - ${endDate}`,
+          bullets: [],
+        };
+        currentBullets = [];
+        expectingPosition = true; // Next line should be job title
+        continue; // Move to next line to find position
+      } else {
+        console.log(`[Parse] ⚠️ [FORMAT 1] Rejected (hasJobTitle=${hasJobTitleInCompany}, length=${companyName.length}): "${companyName}"`);
+      }
+    }
+    
+    // FORMAT 2: Handle mangled format "CompanyNameDates" (no space): "VeriparkAug 2024 – Aug 2025"
+    // CRITICAL: Check this SECOND, and ALWAYS check (even if currentJob exists)
+    if (mangledCompanyDateMatch && !companyDateLineMatch) { // Only if Format 1 didn't match
+      // Extract company name - remove trailing month name if it got captured
+      let companyName = mangledCompanyDateMatch[1].trim();
+      let startDate = mangledCompanyDateMatch[2].trim(); // This should be "Aug 2024"
+      const endDate = mangledCompanyDateMatch[3]?.trim() || "Present";
+      
+      console.log(`[Parse] 🔍 [FORMAT 2] Checking mangledCompanyDateMatch: "${companyName}" with dates "${startDate} - ${endDate}"`);
+      
+      // Remove trailing month names that might have been captured (e.g., "VeriparkAug" -> "Veripark")
+      const monthNames = ['Aug', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Sep', 'Oct', 'Nov', 'Dec',
+                         'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 
+                         'September', 'October', 'November', 'December'];
+      let removedMonth = null;
+      for (const month of monthNames) {
+        if (companyName.toLowerCase().endsWith(month.toLowerCase())) {
+          removedMonth = month;
+          companyName = companyName.substring(0, companyName.length - month.length).trim();
+          console.log(`[Parse] 🔧 Removed trailing month "${month}" from mangled company name`);
+          break;
+        }
+      }
+      
+      // If we removed a month from company name and startDate doesn't have a month, prepend it
+      if (removedMonth && startDate && !startDate.match(/^(Aug|Jan|Feb|Mar|Apr|May|Jun|Jul|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)/i)) {
+        startDate = `${removedMonth} ${startDate}`;
+      }
+      
+      // Check if it's actually a company name (not a job title)
+      // IMPORTANT: Don't reject company names ending with ".ai" - that's a domain extension, not the "AI" keyword
+      const normalizedCompany = companyName.toLowerCase();
+      const hasJobTitleInCompany = jobTitleKeywords.some(keyword => {
+        // Special case: if company ends with ".ai", don't match "AI" keyword unless it's part of the actual name
+        if (keyword.toLowerCase() === 'ai' && normalizedCompany.endsWith('.ai')) {
+          // Check if "ai" appears elsewhere in the name (not just as domain extension)
+          const nameWithoutDomain = normalizedCompany.replace(/\.ai$/, '');
+          return nameWithoutDomain.includes('ai');
+        }
+        return new RegExp(`\\b${keyword}\\b`, 'i').test(companyName);
+      });
+      
+      if (!hasJobTitleInCompany && companyName.length > 2 && companyName.length < 50) {
+        // ALWAYS save previous job if it exists and is valid (this allows multiple experiences)
+        if (currentJob && currentJob.company && currentJob.title) {
+          currentJob.bullets = currentBullets;
+          if (!currentJob.duration) currentJob.duration = "";
+          experience.push(currentJob);
+          console.log(`[Parse] ✅ [FORMAT 2] Saved previous experience before new mangled company: "${currentJob.title}" at "${currentJob.company}" (bullets: ${currentBullets.length}, duration: ${currentJob.duration || "not provided"})`);
+        }
+        
+        console.log(`[Parse] ✅ [FORMAT 2] Found mangled company+dates: "${companyName}" with dates "${startDate} - ${endDate}"`);
+        currentJob = {
+          company: companyName,
+          title: "",
+          duration: `${startDate} - ${endDate}`,
+          bullets: [],
+        };
+        currentBullets = [];
+        expectingPosition = true;
+        continue; // Move to next line to find position
+      } else {
+        console.log(`[Parse] ⚠️ [FORMAT 2] Rejected (hasJobTitle=${hasJobTitleInCompany}, length=${companyName.length}): "${companyName}"`);
+      }
+    }
+    
+    // FORMAT 3: Also check if line starts with capitalized word(s) followed by dates (more flexible)
+    // This handles cases where company name might have spaces: "Techlogix Adalfi Feb 2024 – Aug 2024"
+    // CRITICAL: Check this THIRD, and ALWAYS check (even if currentJob exists)
+    if (hasDatePattern && !dateLineMatch && !companyDateLineMatch && !mangledCompanyDateMatch) {
+      const dateMatch = line.match(/((?:Aug|Jan|Feb|Mar|Apr|May|Jun|Jul|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}|\d{4})\s*[-–]\s*((?:Aug|Jan|Feb|Mar|Apr|May|Jun|Jul|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}|\d{4}|Present|Current)/i);
+      if (dateMatch && dateMatch.index && dateMatch.index > 0) {
+        let potentialCompany = line.substring(0, dateMatch.index).trim();
+        const startDate = dateMatch[1].trim();
+        const endDate = dateMatch[2]?.trim() || "Present";
+        
+        console.log(`[Parse] 🔍 [FORMAT 3] Checking flexible company+dates: "${potentialCompany}" with dates "${startDate} - ${endDate}"`);
+        
+        // Remove trailing month names that might have been captured (e.g., "Techlogix AdalfiFeb" -> "Techlogix Adalfi")
+        const monthNames = ['Aug', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Sep', 'Oct', 'Nov', 'Dec',
+                           'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 
+                           'September', 'October', 'November', 'December'];
+        for (const month of monthNames) {
+          if (potentialCompany.toLowerCase().endsWith(month.toLowerCase())) {
+            potentialCompany = potentialCompany.substring(0, potentialCompany.length - month.length).trim();
+            console.log(`[Parse] 🔧 Removed trailing month "${month}" from flexible company name`);
+            break;
+          }
+        }
+        
+        // Check if it looks like a company name (capitalized, reasonable length, no job keywords)
+        // IMPORTANT: Don't reject company names ending with ".ai" - that's a domain extension, not the "AI" keyword
+        const normalizedCompany = potentialCompany.toLowerCase();
+        const hasJobTitleInCompany = jobTitleKeywords.some(keyword => {
+          // Special case: if company ends with ".ai", don't match "AI" keyword unless it's part of the actual name
+          if (keyword.toLowerCase() === 'ai' && normalizedCompany.endsWith('.ai')) {
+            // Check if "ai" appears elsewhere in the name (not just as domain extension)
+            const nameWithoutDomain = normalizedCompany.replace(/\.ai$/, '');
+            return nameWithoutDomain.includes('ai');
+          }
+          return new RegExp(`\\b${keyword}\\b`, 'i').test(potentialCompany);
+        });
+        
+        if (!hasJobTitleInCompany && potentialCompany.length > 2 && potentialCompany.length < 60 && 
+            /^[A-Z]/.test(potentialCompany) && !potentialCompany.match(/^[•\-\*]/)) {
+          // ALWAYS save previous job if it exists and is valid (this allows multiple experiences)
+          if (currentJob && currentJob.company && currentJob.title) {
+            currentJob.bullets = currentBullets;
+            if (!currentJob.duration) currentJob.duration = "";
+            experience.push(currentJob);
+            console.log(`[Parse] ✅ [FORMAT 3] Saved previous experience before new flexible company: "${currentJob.title}" at "${currentJob.company}" (bullets: ${currentBullets.length}, duration: ${currentJob.duration || "not provided"})`);
+          }
+          
+          console.log(`[Parse] ✅ [FORMAT 3] Found flexible company+dates: "${potentialCompany}" with dates "${startDate} - ${endDate}"`);
+          currentJob = {
+            company: potentialCompany,
+            title: "",
+            duration: `${startDate} - ${endDate}`,
+            bullets: [],
+          };
+          currentBullets = [];
+          expectingPosition = true;
+          continue; // Move to next line to find position
+        } else {
+          console.log(`[Parse] ⚠️ [FORMAT 3] Rejected (hasJobTitle=${hasJobTitleInCompany}, length=${potentialCompany.length}, startsWithCapital=${/^[A-Z]/.test(potentialCompany)}): "${potentialCompany}"`);
+        }
+      }
+    }
     
     // Check if this looks like a company name (capitalized, reasonable length, no dates, no bullets)
     // Company names are usually: short, capitalized, don't contain action verbs, don't have dates
+    // NOTE: We include university/research lab names as valid company names (for internships, research positions, etc.)
     const looksLikeCompanyName = /^[A-Z][A-Za-z0-9\s&.,-]{2,60}$/.test(line) &&
                                  !line.match(/^[•\-\*]/) &&
                                  !hasDatePattern &&
                                  !dateLineMatch &&
-                                 !line.match(/(University|College|School|Institute|Academy)/i) &&
+                                 !mangledCompanyDateMatch && // Don't match if already handled above
                                  // Don't look like a job description (no action verbs at start)
                                  !line.match(/^(Developed|Designed|Implemented|Created|Built|Led|Managed|Improved|Increased|Reduced|Optimized|Delivered|Collaborated|Worked|Responsible|Achieved|Accomplished|Maintained|Supported|Assisted|Contributed|Participated|Helped|Ensured|Established|Provided|Performed|Executed|Coordinated|Organized|Analyzed|Evaluated|Researched|Investigated|Identified|Solved|Resolved|Streamlined|Automated|Enhanced|Upgraded|Migrated|Deployed|Configured|Tested|Debugged|Fixed|Refactored|Reviewed|Documented|Trained|Mentored|Presented|Reported|Communicated)\b/i) &&
                                  // Not too long (company names are usually shorter)
@@ -581,13 +836,118 @@ function parseExperienceSection(sectionContent: string, fullText: string): any[]
                                   nextLine.match(/((?:May|June|January|February|March|April|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|\d{4})\s*[-–]/i));
     
     // Check if this is a position/title (contains job keywords, may have dates)
-    const hasJobTitleKeyword = jobTitleKeywords.some(keyword => 
+    // Handle format: "Software Developer (Remote) Dubai" or "SoftwareDeveloper(Remote)Dubai"
+    
+    // FORMAT 1: Normal format with spaces: "Software Developer (Remote) Dubai"
+    // Extract title (everything before location in parentheses or city name)
+    let extractedTitle = null;
+    let extractedLocation = null;
+    
+    if (expectingPosition) {
+      // Try to extract title and location from formats like:
+      // "Software Developer (Remote) Dubai"
+      // "Associate Software Engineer Karachi, Pakistan"
+      // "Engineering Intern (Hybrid) , Karachi-Pakistan"
+      
+      // Pattern 1: Title (Location) City
+      const titleLocationMatch1 = line.match(/^(.+?)\s*\(([^)]+)\)\s*(.+)?$/);
+      if (titleLocationMatch1) {
+        extractedTitle = titleLocationMatch1[1].trim();
+        extractedLocation = `${titleLocationMatch1[2].trim()}${titleLocationMatch1[3] ? ', ' + titleLocationMatch1[3].trim() : ''}`;
+      } else {
+        // Pattern 2: Title City, Country (no parentheses)
+        // Check if line ends with city/country pattern
+        const cityCountryMatch = line.match(/^(.+?)\s+([A-Z][a-z]+(?:\s*[,-]\s*[A-Z][a-z]+)?)$/);
+        if (cityCountryMatch) {
+          const potentialTitle = cityCountryMatch[1].trim();
+          const potentialLocation = cityCountryMatch[2].trim();
+          // Check if potential title contains job keywords
+          if (jobTitleKeywords.some(keyword => new RegExp(`\\b${keyword}\\b`, 'i').test(potentialTitle))) {
+            extractedTitle = potentialTitle;
+            extractedLocation = potentialLocation;
+          }
+        }
+      }
+      
+      // FORMAT 2: Mangled camelCase: "SoftwareDeveloper(Remote)Dubai" or "AssociateSoftwareEngineerKarachi,Pakistan"
+      if (!extractedTitle) {
+        // Pattern 1: camelCase with comma-separated location: "AssociateSoftwareEngineerKarachi,Pakistan"
+        const camelCaseCommaMatch = line.match(/^([A-Z][a-z]+(?:[A-Z][a-z]+)+),?\s*([A-Z][a-z]+(?:\s*[,-]\s*[A-Z][a-z]+)?)$/);
+        if (camelCaseCommaMatch) {
+          const camelCaseTitle = camelCaseCommaMatch[1];
+          const spacedTitle = camelCaseTitle.replace(/([a-z])([A-Z])/g, '$1 $2');
+          if (jobTitleKeywords.some(keyword => new RegExp(`\\b${keyword}\\b`, 'i').test(spacedTitle))) {
+            extractedTitle = spacedTitle;
+            extractedLocation = camelCaseCommaMatch[2].trim();
+            console.log(`[Parse] ✅ Found camelCase+comma title: "${camelCaseTitle}" -> "${spacedTitle}" (location: ${extractedLocation})`);
+          }
+        }
+        
+        // Pattern 2: camelCase with parentheses: "SoftwareDeveloper(Remote)Dubai"
+        if (!extractedTitle) {
+          // Try to match camelCase title with optional location
+          const mangledTitleMatch = line.match(/^([A-Z][a-z]+(?:[A-Z][a-z]+)+)(?:\(([^)]+)\))?([A-Z][a-z]+)?$/);
+          if (mangledTitleMatch) {
+            // Split camelCase: "SoftwareDeveloper" -> "Software Developer"
+            const camelCaseTitle = mangledTitleMatch[1];
+            const spacedTitle = camelCaseTitle.replace(/([a-z])([A-Z])/g, '$1 $2');
+            if (jobTitleKeywords.some(keyword => new RegExp(`\\b${keyword}\\b`, 'i').test(spacedTitle))) {
+              extractedTitle = spacedTitle;
+              if (mangledTitleMatch[2]) {
+                extractedLocation = mangledTitleMatch[2].trim();
+                if (mangledTitleMatch[3]) {
+                  extractedLocation += ', ' + mangledTitleMatch[3].trim();
+                }
+              } else if (mangledTitleMatch[3]) {
+                extractedLocation = mangledTitleMatch[3].trim();
+              }
+              console.log(`[Parse] ✅ Found mangled title: "${camelCaseTitle}" -> "${spacedTitle}"`);
+            }
+          }
+        }
+        
+        // Pattern 3: Pure camelCase (no parentheses, no comma): "SoftwareDeveloper"
+        if (!extractedTitle) {
+          // Also check if entire line is camelCase (no parentheses)
+          const pureCamelCase = line.match(/^[A-Z][a-z]+(?:[A-Z][a-z]+)+$/);
+          if (pureCamelCase) {
+            const spacedTitle = line.replace(/([a-z])([A-Z])/g, '$1 $2');
+            if (jobTitleKeywords.some(keyword => new RegExp(`\\b${keyword}\\b`, 'i').test(spacedTitle))) {
+              extractedTitle = spacedTitle;
+              console.log(`[Parse] ✅ Found pure camelCase title: "${line}" -> "${extractedTitle}"`);
+            }
+          }
+        }
+      }
+      
+      // If no special format detected, check if whole line is a job title (with spaces)
+      // STRICT: Must contain explicit job title keywords
+      if (!extractedTitle && jobTitleKeywords.some(keyword => new RegExp(`\\b${keyword}\\b`, 'i').test(line))) {
+        // Additional check: line should NOT look like a description
+        const looksLikeDesc = line.match(/^(AI-driven|digital|lending|platform|solutions|banks|enterprise|multi-agent|systems|fintech|creative|writing|ETL|automation|supporting|delivered|scalable|software|leveraging|implemented|code|review|CI\/CD|best|practices|improving|efficiency|reducing|integration|errors|integration|of|AI-based|automation|in|reporting|workflows|boosting|productivity|minimizing|manual|effort|contributed|to|core|engineering|of|fintech|startup|that|raised|seed|fund|delivering|AI-driven|digital|lending|platform|solutions|to|banks|worked|on|developing|scalable|modules|using|integrated|LLM-based|AI|features|into|internal|tools|reducing|time|for|delivery|worked|as|student|engineer|on|multiple|live|projects|utilizing|participated|in|full|software|development|life|cycle|SDLC|practices|contributing|to|clean|testable|maintainable|codebases|gained|hands-on|experience|in|cloud|computing|data|privacy|software|engineering|best|practices|at|an|international|AI|and|data|governance|company|collaborated|with|global|teams|to|ensure|compliance|with|GDPR|and|other|data|privacy|regulations|enhancing|understanding|of|real-world|software|governance|developed|a|strong|understanding|of|modern|work|culture|distributed|collaboration|and|the|impact|of|secure|engineering|processes)\b/i);
+        if (!looksLikeDesc) {
+          extractedTitle = line.trim();
+        }
+      }
+    }
+    
+    const hasJobTitleKeyword = extractedTitle ? true : jobTitleKeywords.some(keyword => 
       new RegExp(`\\b${keyword}\\b`, 'i').test(line)
     );
     
-    const looksLikePosition = hasJobTitleKeyword &&
+    // STRICT position detection: Must have job title keywords AND not look like a bullet/description
+    // Don't accept lines that start with action verbs or look like descriptions as positions
+    const looksLikeDescription = line.match(/^(Developed|Designed|Implemented|Created|Built|Led|Managed|Improved|Increased|Reduced|Optimized|Delivered|Collaborated|Worked|Responsible|Achieved|Accomplished|Maintained|Supported|Assisted|Contributed|Participated|Helped|Ensured|Established|Provided|Performed|Executed|Coordinated|Organized|Analyzed|Evaluated|Researched|Investigated|Identified|Solved|Resolved|Streamlined|Automated|Enhanced|Upgraded|Migrated|Deployed|Configured|Tested|Debugged|Fixed|Refactored|Reviewed|Documented|Trained|Mentored|Presented|Reported|Communicated|Gained|Contributed|Delivered|Worked as|Worked on|Participated in|Collaborated with|AI-driven|digital|lending|platform|solutions|to|banks|enterprise|multi-agent|systems|fintech|creative|writing|ETL|automation|supporting|leveraging|implemented|code|review|CI\/CD|best|practices|improving|efficiency|reducing|integration|errors|integration|of|AI-based|automation|in|reporting|workflows|boosting|productivity|minimizing|manual|effort|contributed|to|core|engineering|of|fintech|startup|that|raised|seed|fund|delivering|worked|on|developing|scalable|modules|using|integrated|LLM-based|AI|features|into|internal|tools|reducing|time|for|delivery|worked|as|student|engineer|on|multiple|live|projects|utilizing|participated|in|full|software|development|life|cycle|SDLC|practices|contributing|to|clean|testable|maintainable|codebases|gained|hands-on|experience|in|cloud|computing|data|privacy|software|engineering|best|practices|at|an|international|AI|and|data|governance|company|collaborated|with|global|teams|to|ensure|compliance|with|GDPR|and|other|data|privacy|regulations|enhancing|understanding|of|real-world|software|governance|developed|a|strong|understanding|of|modern|work|culture|distributed|collaboration|and|the|impact|of|secure|engineering|processes)\b/i);
+    
+    // When expecting position, MUST have job keywords (strict requirement)
+    // Don't accept descriptions or bullet-like text as positions
+    // CRITICAL: When expectingPosition, ONLY accept if extractedTitle is set (which means it passed strict checks)
+    const looksLikePosition = (expectingPosition ? extractedTitle : (extractedTitle || hasJobTitleKeyword)) &&
                               !line.match(/^[•\-\*]/) &&
-                              (hasDatePattern || dateLineMatch || expectingPosition);
+                              !looksLikeDescription && // Don't accept descriptions as positions
+                              (hasDatePattern || dateLineMatch || expectingPosition) &&
+                              // When expecting position, MUST have extractedTitle (strict requirement)
+                              (expectingPosition ? (extractedTitle !== null) : true);
     
     // Check if this is a bullet point
     const isBullet = /^[•\-\*]\s*/.test(line) || 
@@ -602,11 +962,13 @@ function parseExperienceSection(sectionContent: string, fullText: string): any[]
     
     if (looksLikeCompanyName && !currentJob) {
       // Start new job entry - found company name
-      // Save previous job if exists
-      if (currentJob && currentJob.company && currentJob.title && currentJob.duration && currentBullets.length > 0) {
+      // Save previous job if exists (duration and bullets are optional)
+      if (currentJob && currentJob.company && currentJob.title) {
         currentJob.bullets = currentBullets;
+        // Set duration to empty string if not provided
+        if (!currentJob.duration) currentJob.duration = "";
         experience.push(currentJob);
-        console.log(`[Parse] ✅ Valid experience: "${currentJob.title}" at "${currentJob.company}"`);
+        console.log(`[Parse] ✅ Valid experience: "${currentJob.title}" at "${currentJob.company}" (bullets: ${currentBullets.length}, duration: ${currentJob.duration || "not provided"})`);
       }
       
       currentJob = {
@@ -617,29 +979,51 @@ function parseExperienceSection(sectionContent: string, fullText: string): any[]
       };
       currentBullets = [];
       expectingPosition = true; // Next line should be position
-      console.log(`[Parse] Found company: "${line}"`);
+      console.log(`[Parse] ✅ Found company: "${line}" (next line: "${nextLine.substring(0, 50)}")`);
       
     } else if (looksLikePosition && currentJob && expectingPosition) {
-      // Found position - extract title and dates
-      if (hasDatePattern) {
-        // Position and date on same line: "Software Engineer                    May 2024 - Aug 2025"
-        const dateMatch = line.match(/((?:May|June|January|February|March|April|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|\d{4})\s*[-–]\s*((?:May|June|January|February|March|April|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|\d{4}|Present|Current)/i);
-        if (dateMatch) {
-          currentJob.title = line.substring(0, dateMatch.index).trim();
-          currentJob.duration = `${dateMatch[1]} - ${dateMatch[2] || "Present"}`;
-          expectingPosition = false;
-          console.log(`[Parse] Found position: "${currentJob.title}" with dates: "${currentJob.duration}"`);
-        } else {
-          // Just position, dates might be on next line
-          currentJob.title = line.trim();
-          expectingPosition = false;
-        }
+      // Found position - extract title and location
+      // CRITICAL: Only accept if extractedTitle is set (strict validation passed)
+      if (!extractedTitle) {
+        // This shouldn't happen if looksLikePosition is correct, but double-check
+        console.log(`[Parse] ⚠️ looksLikePosition=true but extractedTitle is null, skipping: "${line.substring(0, 50)}"`);
+        // Don't set expectingPosition to false - keep waiting
       } else {
-        // Position without dates on this line
+        // ALWAYS check if title needs camelCase splitting
+        let finalTitle = extractedTitle;
+        
+        // If title is camelCase (no spaces but has capital letters), split it
+        if (!finalTitle.includes(' ') && /[a-z][A-Z]/.test(finalTitle)) {
+          finalTitle = finalTitle.replace(/([a-z])([A-Z])/g, '$1 $2');
+          console.log(`[Parse] ✅ Split camelCase title: "${extractedTitle}" -> "${finalTitle}"`);
+        }
+        
+        // Handle extracted title (from various formats)
+        currentJob.title = finalTitle;
+        if (extractedLocation) {
+          // Clean up location - remove extra commas
+          currentJob.location = extractedLocation.replace(/,\s*,/g, ',').replace(/^,\s*|\s*,$/g, '').trim();
+        }
+        expectingPosition = false;
+        console.log(`[Parse] ✅ Found position: "${currentJob.title}"${extractedLocation ? ` at ${currentJob.location}` : ''}`);
+      }
+    } else if (hasDatePattern && currentJob && expectingPosition && hasJobTitleKeyword && !looksLikeDescription) {
+      // Position might have dates on same line (fallback case)
+      // Position and date on same line: "Software Engineer                    May 2024 - Aug 2025"
+      const dateMatch = line.match(/((?:May|June|January|February|March|April|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|\d{4})\s*[-–]\s*((?:May|June|January|February|March|April|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|\d{4}|Present|Current)/i);
+      if (dateMatch) {
+        currentJob.title = line.substring(0, dateMatch.index).trim();
+        // Only update duration if not already set (from company+dates line)
+        if (!currentJob.duration) {
+          currentJob.duration = `${dateMatch[1]} - ${dateMatch[2] || "Present"}`;
+        }
+        expectingPosition = false;
+        console.log(`[Parse] Found position: "${currentJob.title}" with dates: "${currentJob.duration}"`);
+      } else {
+        // Just position, dates might be on next line
         currentJob.title = line.trim();
         expectingPosition = false;
       }
-      
     } else if (dateLineMatch && currentJob && !currentJob.duration && !expectingPosition) {
       // Standalone date line (after position)
       currentJob.duration = `${dateLineMatch[1]} - ${dateLineMatch[2] || "Present"}`;
@@ -659,11 +1043,15 @@ function parseExperienceSection(sectionContent: string, fullText: string): any[]
       }
       
     } else if (looksLikeCompanyName && currentJob) {
-      // New company found - save previous job
-      if (currentJob.company && currentJob.title && currentJob.duration && currentBullets.length > 0) {
+      // New company found - save previous job (duration and bullets are optional)
+      if (currentJob.company && currentJob.title) {
         currentJob.bullets = currentBullets;
+        // Set duration to empty string if not provided
+        if (!currentJob.duration) currentJob.duration = "";
         experience.push(currentJob);
-        console.log(`[Parse] ✅ Valid experience: "${currentJob.title}" at "${currentJob.company}"`);
+        console.log(`[Parse] ✅ Valid experience: "${currentJob.title}" at "${currentJob.company}" (bullets: ${currentBullets.length}, duration: ${currentJob.duration || "not provided"})`);
+      } else {
+        console.log(`[Parse] ⚠️ Skipping incomplete job: company=${!!currentJob.company}, title=${!!currentJob.title}`);
       }
       
       // Start new job
@@ -679,14 +1067,26 @@ function parseExperienceSection(sectionContent: string, fullText: string): any[]
     }
   }
   
-  // Save last job
-  if (currentJob && currentJob.company && currentJob.title && currentJob.duration && currentBullets.length > 0) {
+  // Save last job (duration and bullets are optional - some resumes don't have dates or bullets)
+  if (currentJob && currentJob.company && currentJob.title) {
     currentJob.bullets = currentBullets;
+    // Set duration to empty string if not provided
+    if (!currentJob.duration) currentJob.duration = "";
     experience.push(currentJob);
-    console.log(`[Parse] ✅ Valid experience: "${currentJob.title}" at "${currentJob.company}"`);
+    console.log(`[Parse] ✅ Valid experience: "${currentJob.title}" at "${currentJob.company}" (bullets: ${currentBullets.length}, duration: ${currentJob.duration || "not provided"})`);
+  } else if (currentJob) {
+    console.log(`[Parse] ⚠️ Skipping incomplete last job: company=${!!currentJob.company}, title=${!!currentJob.title}`);
   }
   
-  console.log(`[Parse] Extracted ${experience.length} valid experience entries (Company → Position → Dates → Bullets format)`);
+  console.log(`[Parse] parseExperienceSection: Extracted ${experience.length} valid experience entries (Company → Position → Dates → Bullets format)`);
+  if (experience.length === 0 && currentJob) {
+    console.log(`[Parse] ⚠️ WARNING: Current job exists but wasn't saved:`, {
+      company: currentJob.company,
+      title: currentJob.title,
+      duration: currentJob.duration,
+      bulletsCount: currentBullets.length
+    });
+  }
   return experience;
 }
 
@@ -954,10 +1354,13 @@ function parseExperienceFallback(text: string): any[] {
   const experienceSet = new Set<string>();
   
   // Job title keywords (must contain at least one)
+  // Include student job keywords: Intern, Trainee, Researcher, Assistant, Co-op
   const jobTitleKeywords = [
     'Engineer', 'Developer', 'Manager', 'Analyst', 'Architect', 'Specialist',
     'Consultant', 'Lead', 'Director', 'Coordinator', 'Associate', 'Senior',
-    'Junior', 'Intern', 'Software', 'Data', 'Product', 'Technical', 'DevOps'
+    'Junior', 'Intern', 'Trainee', 'Researcher', 'Research', 'Assistant',
+    'Co-op', 'Coop', 'Software', 'Data', 'Product', 'Technical', 'DevOps',
+    'Teaching', 'Scientist', 'Designer'
   ];
   
   for (const pattern of patterns) {
@@ -978,12 +1381,16 @@ function parseExperienceFallback(text: string): any[] {
       );
       if (!hasJobTitleKeyword) continue;
       
-      // Exclude if matches exclusion patterns
+      // Exclude if matches exclusion patterns (but allow university/research lab names as valid company names)
+      // Only exclude if the context clearly indicates education (e.g., "Bachelor Degree University" not "Research Assistant MIT")
       const context = `${title} ${company}`;
-      if (excludePatterns.some(pattern => pattern.test(context))) continue;
-      
-      // Exclude if company looks like a university/school
-      if (company.match(/(University|College|School|Institute|Academy)/i)) continue;
+      // More nuanced exclusion: only exclude if it's clearly education context, not a job at a university/research lab
+      const isEducationContext = /^(Bachelor|Master|PhD|Degree|Coursework)\s/.test(context) || 
+                                  context.match(/^(Bachelor|Master|PhD|Degree|Coursework)\s/);
+      if (isEducationContext || (excludePatterns.some(pattern => pattern.test(context)) && 
+          !title.match(/\b(Intern|Trainee|Researcher|Research|Assistant|Teaching|Co-op|Coop)\b/i))) {
+        continue;
+      }
       
       const key = `${title}|${company}`;
       if (!experienceSet.has(key)) {
@@ -1002,16 +1409,19 @@ function parseExperienceFallback(text: string): any[] {
   // Only try additional patterns if we found nothing (very strict)
   if (experience.length === 0) {
     const jobTitlePatterns = [
-      /(Software\s+(?:Engineer|Developer|Architect|Consultant|Specialist))/i,
+      /(Software\s+(?:Engineer|Developer|Architect|Consultant|Specialist|Intern))/i,
       /(Senior\s+Software\s+(?:Engineer|Developer|Architect))/i,
-      /(Full\s+Stack\s+(?:Developer|Engineer))/i,
-      /(Backend\s+(?:Developer|Engineer|Architect))/i,
-      /(Frontend\s+(?:Developer|Engineer|Architect))/i,
-      /(DevOps\s+(?:Engineer|Specialist|Architect))/i,
-      /(Data\s+(?:Scientist|Engineer|Analyst|Architect))/i,
-      /(Product\s+(?:Manager|Owner|Specialist))/i,
+      /(Full\s+Stack\s+(?:Developer|Engineer|Intern))/i,
+      /(Backend\s+(?:Developer|Engineer|Architect|Intern))/i,
+      /(Frontend\s+(?:Developer|Engineer|Architect|Intern))/i,
+      /(DevOps\s+(?:Engineer|Specialist|Architect|Intern))/i,
+      /(Data\s+(?:Scientist|Engineer|Analyst|Architect|Intern))/i,
+      /(Product\s+(?:Manager|Owner|Specialist|Intern))/i,
       /(Project\s+Manager)/i,
-      /(Technical\s+(?:Lead|Manager|Architect))/i,
+      /(Technical\s+(?:Lead|Manager|Architect|Intern))/i,
+      /(Research\s+(?:Assistant|Associate|Scientist|Engineer|Intern|Fellow))/i,
+      /(Teaching\s+Assistant)/i,
+      /(Co-op|Coop)/i,
     ];
     
     for (const titlePattern of jobTitlePatterns) {
@@ -1026,8 +1436,8 @@ function parseExperienceFallback(text: string): any[] {
         // STRICT: Must have both company AND dates
         if (companyMatch && dateMatch) {
           const company = companyMatch[1].trim();
-          // Exclude if company looks like a university/school
-          if (company.match(/(University|College|School|Institute|Academy)/i)) continue;
+          // Allow university/research lab names as valid company names (for internships, research positions, etc.)
+          // Only exclude if it's clearly education context, not a job
           
           const key = `${title}|${company}`;
           if (!experienceSet.has(key)) {
@@ -1307,11 +1717,11 @@ function reclassifyExperienceAndProjects(
     return { isExperience, confidence };
   }
 
-  // Classify all experience entries - STRICT: Must have company AND duration
+  // Classify all experience entries - REQUIRE company, duration is optional
   for (const exp of experience) {
-    // STRICT REQUIREMENT: Must have both company and duration to be valid experience
-    if (!exp.company || !exp.duration) {
-      console.log(`[Parse] ❌ Filtering out incomplete experience entry: "${exp.title || exp.name}" (missing company: ${!exp.company}, missing duration: ${!exp.duration})`);
+    // REQUIREMENT: Must have company (duration is optional - some resumes don't have dates)
+    if (!exp.company) {
+      console.log(`[Parse] ❌ Filtering out incomplete experience entry: "${exp.title || exp.name}" (missing company)`);
       // If it looks like a project, add it to projects; otherwise discard
       const classification = classifyEntry(exp, 'experience');
       if (!classification.isExperience && classification.confidence >= 2) {
@@ -1326,13 +1736,22 @@ function reclassifyExperienceAndProjects(
       continue; // Skip this entry - not valid experience
     }
     
+    // Set duration to empty string if not provided
+    if (!exp.duration) {
+      exp.duration = "";
+      console.log(`[Parse] ⚠️ Experience entry "${exp.title || exp.name}" at "${exp.company}" has no duration - using empty string`);
+    }
+    
     const classification = classifyEntry(exp, 'experience');
-    // STRICT: Only keep if clearly experience with high confidence
-    if (classification.isExperience && classification.confidence >= 2) {
+    
+    // LESS STRICT: Keep experience entries if they have company + title (basic requirements met)
+    // Only reclassify as project if clearly NOT experience with high confidence
+    if (classification.isExperience) {
+      // If classified as experience, keep it (even with low confidence - we already validated company exists)
       finalExperience.push(exp);
       console.log(`[Parse] ✅ Valid experience entry: "${exp.title || exp.name}" at "${exp.company}" (confidence: ${classification.confidence})`);
-    } else if (!classification.isExperience && classification.confidence >= 2) {
-      // Reclassify as project if clearly a project
+    } else if (!classification.isExperience && classification.confidence >= 3) {
+      // Only reclassify as project if VERY clearly a project (high confidence it's NOT experience)
       console.log(`[Parse] Reclassified experience entry as project: "${exp.title || exp.name}" (confidence: ${classification.confidence})`);
       finalProjects.push({
         name: exp.title || exp.name || 'Project',
@@ -1341,8 +1760,9 @@ function reclassifyExperienceAndProjects(
         ...exp
       });
     } else {
-      // Low confidence - filter out to avoid false positives
-      console.log(`[Parse] ❌ Filtering out ambiguous entry: "${exp.title || exp.name}" (confidence: ${classification.confidence})`);
+      // Low confidence but classified as experience - keep it (better to include than exclude)
+      finalExperience.push(exp);
+      console.log(`[Parse] ✅ Keeping experience entry (low confidence but has company+title): "${exp.title || exp.name}" at "${exp.company}" (confidence: ${classification.confidence})`);
     }
   }
 
